@@ -1,49 +1,96 @@
 # D-Scratch
 
-A macOS scratch pad. Pages live in a left-hand sidebar; each page is a rich-text document that can hold images, video and audio, and any page can be locked with a password.
+A macOS scratch pad. Pages live in a left-hand sidebar and can be organised into groups. Each page is a rich-text document that can hold images, video, audio and syntax-highlighted code. Pages can be locked behind a single D-Scratch password, searched all at once, and you can ask Claude questions from the top of any page.
 
 ## Features
 
-- **Pages sidebar** — add (⌘N), rename, reorder (drag), delete.
-- **Groups** — New Group (⇧⌘N or the folder button) adds a collapsible group. Drag pages into, out of and between groups, or right-click a page → Move to Group. ⌘N adds a page to the selected page's group. Right-click a group to add a page, rename it, lock every page in it at once, or delete the group (its pages move to the top level).
-- **Rich text** — format bar (font, size, colour, alignment, lists), ⌘B / ⌘I / ⌘U, font panel (⌘T), colour panel (⇧⌘C), find (⌘F).
-- **Code** — pasted code is detected and placed in a boxed, syntax-highlighted block. Type ``` and press Return to start a block, or select text and choose Format › Code Block (⌥⌘K). Return on an empty last line leaves the block; ↑/↓ or a click above or below a block at the very top or bottom of a page adds a text line there. Choose the colour scheme (Automatic, Light, Dark, Solarized Light, Dracula) in Settings › Code. Code in Claude's answers is boxed too.
-- **Open With** — right-click a file in Finder → Open With → D-Scratch (or drop it on the Dock icon) to import it as a new page named after the file. Text, Markdown, RTF/RTFD, Word, HTML and OpenDocument files become rich text; source code becomes a code block; images, video and audio are embedded. D-Scratch is registered as an alternate app, so it never becomes the default for these files.
-- **Media** — drag, paste or Insert Media (⇧⌘I) for images, video and audio. Images scale to the page width; video and audio play inline.
-- **Locked pages** — one D-Scratch password (set or change it in Settings, ⌘,) locks and unlocks every locked page. Unlocking once opens them all; they lock again after the auto-lock timeout (minutes of inactivity, set in Settings), on ⌘L, or when the Mac sleeps, the screen locks or the user session switches.
-- **Search** — the sidebar search field searches every page's title and text. Locked pages are searched only while unlocked. Click a result to jump to it.
-- **Ask Claude** — the bar at the top of each page sends a question (optionally with the page's text as context) to Claude and appends the answer to the page. By default it uses the Claude account you're logged in to in [Claude Code](https://claude.com/claude-code) (e.g. a Pro plan; run `claude` once in Terminal to log in), so no API key is needed and usage counts toward that plan. Settings → Claude can switch to an API key instead. With your Claude account, tick **Use caveman** for shorter answers: it loads the [caveman](https://github.com/JuliusBrussee/caveman) plugin for that request (requires the plugin installed locally in Claude Code).
+### Pages and groups
+- **Pages** — ⌘N or the **+** button adds a page (inside the selected page's group, if any) and asks for a name. Right-click a page to rename, move, lock or delete it. Drag to reorder.
+- **Groups** — ⇧⌘N or the folder button adds a collapsible group. Drag pages into, out of and between groups, or right-click a page → **Move to Group**. Right-click a group to add a page to it, rename it, lock every page in it at once, remove those locks, or delete the group (its pages move to the top level).
+- **Search** — the sidebar search field searches every page's title and text, case- and accent-insensitively. Results are listed by page (shown as *Group › Page*); click one to open the page with the match highlighted. Locked pages are only searched while unlocked.
+
+### Writing
+- **Rich text** — format bar above the text (font, size, colour, alignment, lists), ⌘B / ⌘I / ⌘U, font panel (⌘T) and colour panel (⇧⌘C). Text follows light and dark mode.
+- **Code blocks** — pasted code is detected and placed in a boxed, syntax-highlighted block. Type ``` and press Return to start a block, or select lines and choose **Format › Code Block** (⌥⌘K) to convert them (and back). Return on an empty last line leaves a block; ↑/↓ or a click above or below a block at the very top or bottom of a page adds a text line there. Highlighting covers comments, strings, numbers, keywords, types and function calls across common languages (Swift, Python, JavaScript/TypeScript, C-style, SQL, shell). Pick the colour scheme in **Settings › Code**.
+- **Media** — drag, paste or **Page › Insert Media…** (⇧⌘I) for images, video and audio. Images scale to the page width; video and audio play inline.
+
+### Open With
+Right-click a file in Finder → **Open With → D-Scratch**, or drop it on the Dock icon, to import it as a new page named after the file:
+- Text, Markdown, RTF/RTFD, Word, HTML and OpenDocument files become rich text (Markdown is rendered).
+- Source code, scripts, JSON, XML and YAML become a code block, as does a plain-text file that looks like code.
+- Images, video and audio are embedded.
+
+D-Scratch registers as an *alternate* app for these types, so it never becomes the default for opening them.
+
+### Locked pages
+- One D-Scratch password locks and unlocks every locked page. Set or change it in **Settings › Security**; the first time you lock a page without one, D-Scratch asks you to create it.
+- Lock a page with the toolbar **Lock Page** button or right-click → **Lock Page**; right-click a group → **Lock All Pages in Group** to lock its pages in one go.
+- Entering the password unlocks every locked page. A page you lock while unlocked stays visible (open-lock icon) until everything locks again.
+- Everything locks again after the auto-lock timeout (minutes of inactivity, set in Settings; 0 = never), with **Page › Lock All Pages** (⌘L) or the toolbar **Lock All** button, and when the Mac sleeps, the screen locks or the user session switches.
+- While unlocked, right-click → **Remove Lock** decrypts a page permanently.
+- A locked page can't be renamed or deleted until it's unlocked.
+
+### Ask Claude
+The bar at the top of each page sends a question to Claude, streams the answer into a preview, then appends it to the page under a *Claude: your question* heading (Markdown in the answer becomes rich text; code becomes a code block). **Use page** sends the page's text as context; **Stop** cancels.
+
+Two ways to connect, chosen in **Settings › Claude**:
+- **Claude account (default)** — uses the account you're logged in to in [Claude Code](https://claude.com/claude-code), such as a Pro plan, so no API key is needed and usage counts toward that plan. Run `claude` once in Terminal to log in; Settings shows who you're logged in as. Models: *Default for your plan*, Opus, Sonnet or Haiku. Tick **Use caveman** for shorter answers — it loads the [caveman](https://github.com/JuliusBrussee/caveman) plugin for each request and requires that plugin to be installed locally in Claude Code.
+- **API key** — calls the Claude API directly with your key (stored in the Keychain). Models: Claude Opus 5.5, Sonnet 5.5 or Haiku 4.5.
+
+## Settings (⌘,)
+
+| Tab | Options |
+|---|---|
+| Security | Set or change the D-Scratch password; auto-lock timeout in minutes of inactivity. |
+| Code | Code colour scheme: Automatic (follows light/dark), Light, Dark, Solarized Light, Dracula — with a live preview. |
+| Claude | Claude account or API key; model; Use caveman (Claude account only). |
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| ⌘N | New page |
+| ⇧⌘N | New group |
+| ⇧⌘I | Insert image, video or audio |
+| ⌘L | Lock all pages |
+| ⌥⌘K | Code block on/off for the selected lines |
+| ⌘B / ⌘I / ⌘U | Bold / italic / underline |
+| ⌘T | Font panel |
+| ⇧⌘C | Colour panel |
+| ⌘, | Settings |
 
 ## Build
 
-Requires macOS 13+ and the Swift toolchain (Xcode or Command Line Tools).
+Requires macOS 13+ and the Swift toolchain (Xcode or Command Line Tools). The Claude account option also needs [Claude Code](https://claude.com/claude-code) installed and logged in.
 
 ```sh
-./build.sh          # builds build/D-Scratch.app
+./build.sh          # builds build/D-Scratch.app and registers it for Open With
 ./build.sh --open   # builds and launches
 ```
 
 Copy `build/D-Scratch.app` to `/Applications` to install.
 
+For testing, set `DSCRATCH_DATA_DIR` to use a different data folder, e.g. `open --env DSCRATCH_DATA_DIR=/tmp/ds -a build/D-Scratch.app`.
+
 ## Storage
 
 `~/Library/Application Support/D-Scratch/`
 
-- `index.json` — page titles, order, lock flag and group.
+- `index.json` — page titles, order, group and lock flag.
 - `groups.json` — group names, order and expanded state.
 - `vault.json` — a random 256-bit data key, wrapped (AES-256-GCM) by a key derived from the D-Scratch password with PBKDF2-HMAC-SHA256 (310,000 rounds, random 16-byte salt). Changing the password only re-wraps this key.
-- `pages/<id>.page` — unlocked pages, flat RTFD.
+- `pages/<id>.page` — unlocked pages, flat RTFD. Code blocks are stored as Menlo paragraphs; their colours are recomputed when a page opens.
 - `pages/<id>.locked` — locked pages: RTFD sealed with AES-256-GCM under the data key.
 
-The Claude API key is stored in the macOS Keychain. Settings (auto-lock minutes, model) are in the app's user defaults.
+The Claude API key is stored in the macOS Keychain. Other settings (auto-lock minutes, code scheme, Claude connection, models, Use caveman, Use page) are in the app's user defaults.
 
 Pages locked by v0.1 with their own password keep working: unlock with the D-Scratch password, then enter the page's old password once to move it over.
 
 ## Security notes
 
 - A forgotten password cannot be recovered.
-- Using your Claude account runs the local `claude` CLI with no tools, no settings, plugins or MCP servers, and no saved session, from an empty temporary folder. This is for personal use on your own Mac.
-- With "Use page" ticked, Ask Claude sends the page's text — including a locked page's, while unlocked — to the Claude API.
 - Page **titles** are not encrypted; only content is.
+- With **Use page** ticked, Ask Claude sends the page's text — including a locked page's, while unlocked — to Claude (through Claude Code or the API, whichever is selected).
+- The Claude account option runs the local `claude` CLI with no tools, no settings, plugins (other than caveman, if ticked) or MCP servers, and no saved session, from an empty temporary folder. It's intended for personal use on your own Mac.
 - Inline video/audio from an unlocked page is written to a temp folder for playback. The folder is cleared on lock and on quit.
 - When a page is first locked, the old plaintext file is deleted but not securely erased.
