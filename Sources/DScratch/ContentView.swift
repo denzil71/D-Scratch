@@ -24,17 +24,12 @@ struct ContentView: View {
             .searchable(text: $store.searchQuery, placement: .sidebar, prompt: "Search pages or #tags")
             .safeAreaInset(edge: .top) { tagFilterBar }
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 380)
-            .toolbar {
-                ToolbarItemGroup {
-                    Button { store.addGroup() } label: { Label("New Group", systemImage: "folder.badge.plus") }
-                        .help("New group (⇧⌘N)")
-                    Button { store.addPageNearSelection() } label: { Label("New Page", systemImage: "plus") }
-                        .help("New page (⌘N)")
-                }
-            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { sidebarActions }
         } detail: {
             if let page = store.page(store.selection) {
                 PageDetail(page: page, requestLock: { requestLock([$0.id]) })
+            } else if let group = store.groups.first(where: { $0.id == store.selection }) {
+                GroupSummary(group: group)
             } else {
                 Text("Select or create a page").foregroundStyle(.secondary)
             }
@@ -84,6 +79,7 @@ struct ContentView: View {
                         .onInsert(of: [.plainText]) { index, providers in drop(providers, into: group.id, at: index) }
                 } label: {
                     GroupRow(group: group, pages: store.pages(in: group.id), isUnlocked: store.isUnlocked, tags: store.groupTags(group.id))
+                        .tag(group.id)
                         .contentShape(Rectangle())
                         .onDrop(of: [.plainText], isTargeted: nil) { providers in
                             drop(providers, into: group.id, at: nil)
@@ -93,6 +89,28 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    /// Always-visible New Page / New Group buttons at the bottom of the sidebar.
+    private var sidebarActions: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 14) {
+                Button { store.addPageNearSelection() } label: { Label("New Page", systemImage: "plus") }
+                    .help(newPageHelp)
+                Button { store.addGroup() } label: { Label("New Group", systemImage: "folder.badge.plus") }
+                    .help("New group (⇧⌘N)")
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private var newPageHelp: String {
+        if let group = store.name(of: store.selectionGroupID) { return "New page in “\(group)” (⌘N)" }
+        return "New page (⌘N)"
     }
 
     private func pageRow(_ page: PageMeta) -> some View {
@@ -428,5 +446,28 @@ struct LockSheet: View {
         }
         store.lockPages(request.pageIDs)
         dismiss()
+    }
+}
+
+/// Shown when a group header is selected.
+struct GroupSummary: View {
+    @EnvironmentObject var store: Store
+    let group: PageGroup
+
+    var body: some View {
+        let pages = store.pages(in: group.id)
+        let tags = store.groupTags(group.id)
+        VStack(spacing: 12) {
+            Image(systemName: "folder").font(.system(size: 44)).foregroundStyle(.secondary)
+            Text(group.name).font(.title2.bold())
+            Text(pages.count == 1 ? "1 page" : "\(pages.count) pages").foregroundStyle(.secondary)
+            if !tags.isEmpty {
+                HStack(spacing: 6) { ForEach(tags) { TagChip(tag: $0) } }
+            }
+            Button { store.addPage(inGroup: group.id) } label: { Label("New Page in Group", systemImage: "plus") }
+                .keyboardShortcut(.defaultAction)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle(group.name)
     }
 }
