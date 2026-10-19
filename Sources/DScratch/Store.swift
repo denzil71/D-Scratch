@@ -276,9 +276,15 @@ final class Store: ObservableObject {
         return NSAttributedString(string: "Couldn't read \(url.lastPathComponent).", attributes: CodeFormat.bodyAttributes)
     }
 
-    /// New page in the same group as the selected page.
+    /// New page in the selected group, or alongside the selected page.
     func addPageNearSelection() {
-        addPage(inGroup: page(selection)?.groupID)
+        addPage(inGroup: selectionGroupID)
+    }
+
+    /// The selected group, or the group of the selected page; nil at the top level.
+    var selectionGroupID: UUID? {
+        if let group = groups.first(where: { $0.id == selection }) { return group.id }
+        return page(selection)?.groupID
     }
 
     /// Title of the page or group with this id.
@@ -338,6 +344,7 @@ final class Store: ObservableObject {
         groups.removeAll { $0.id == groupID }
         saveIndex()
         saveGroups()
+        if selection == groupID { selection = nil }
     }
 
     func delete(_ id: UUID) {
