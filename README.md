@@ -1,13 +1,14 @@
 # D-Scratch
 
-A macOS scratch pad. Pages live in a left-hand sidebar and can be organised into groups. Each page is a rich-text document that can hold images, video, audio and syntax-highlighted code. Pages can be locked behind a single D-Scratch password, searched all at once, and you can ask Claude questions from the top of any page.
+A macOS scratch pad. Pages live in a left-hand sidebar and can be organised into groups and tagged. Each page is a rich-text document that can hold images, video, audio and syntax-highlighted code. Pages can be locked behind a single D-Scratch password, searched all at once, and you can ask Claude questions from the top of any page.
 
 ## Features
 
 ### Pages and groups
 - **Pages** — ⌘N or the **+** button adds a page (inside the selected page's group, if any) and asks for a name. Right-click a page to rename, move, lock or delete it. Drag to reorder.
 - **Groups** — ⇧⌘N or the folder button adds a collapsible group. Drag pages into, out of and between groups, or right-click a page → **Move to Group**. Right-click a group to add a page to it, rename it, lock every page in it at once, remove those locks, or delete the group (its pages move to the top level).
-- **Search** — the sidebar search field searches every page's title and text, case- and accent-insensitively. Results are listed by page (shown as *Group › Page*); click one to open the page with the match highlighted. Locked pages are only searched while unlocked.
+- **Tags** — the bar at the top of each page shows its tags as coloured chips. **+** adds an existing tag or creates a new one (names are one word; spaces become hyphens); **×** removes one. Right-click a group → **Tags…** to tag the whole group: every page in it inherits those tags, shown with a folder icon on the page. Clicking a tag searches for it. Tag colour dots appear next to pages and groups in the sidebar. New tags get a random colour; rename, recolour or delete tags in **Settings › Tags**.
+- **Search** — the sidebar search field searches every page's title and text, case- and accent-insensitively. Add `#tag` to filter by tag (prefix match, including tags inherited from a group; several `#tags` must all match) — on its own it lists every page with that tag, and with other words it searches only those pages. The tag chips under the search field toggle tag filters. Results are listed by page (shown as *Group › Page*); click one to open the page with the match highlighted. Locked pages are only searched while unlocked.
 
 ### Writing
 - **Rich text** — format bar above the text (font, size, colour, alignment, lists), ⌘B / ⌘I / ⌘U, font panel (⌘T) and colour panel (⇧⌘C). Text follows light and dark mode.
@@ -42,6 +43,7 @@ Two ways to connect, chosen in **Settings › Claude**:
 | Tab | Options |
 |---|---|
 | Security | Set or change the D-Scratch password; auto-lock timeout in minutes of inactivity. |
+| Tags | Rename tags, change their colours, see how many pages and groups use each, delete tags, add new ones. |
 | Code | Code colour scheme: Automatic (follows light/dark), Light, Dark, Solarized Light, Dracula — with a live preview. |
 | Claude | Claude account or API key; model; Use caveman (Claude account only). |
 
@@ -93,8 +95,9 @@ For testing, set `DSCRATCH_DATA_DIR` to use a different data folder, e.g. `open 
 
 `~/Library/Application Support/D-Scratch/`
 
-- `index.json` — page titles, order, group and lock flag.
-- `groups.json` — group names, order and expanded state.
+- `index.json` — page titles, order, group, tags and lock flag.
+- `groups.json` — group names, order, expanded state and tags.
+- `tags.json` — tag names and colours.
 - `vault.json` — a random 256-bit data key, wrapped (AES-256-GCM) by a key derived from the D-Scratch password with PBKDF2-HMAC-SHA256 (310,000 rounds, random 16-byte salt). Changing the password only re-wraps this key.
 - `pages/<id>.page` — unlocked pages, flat RTFD. Code blocks are stored as Menlo paragraphs; their colours are recomputed when a page opens.
 - `pages/<id>.locked` — locked pages: RTFD sealed with AES-256-GCM under the data key.
@@ -106,7 +109,7 @@ Pages locked by v0.1 with their own password keep working: unlock with the D-Scr
 ## Security notes
 
 - A forgotten password cannot be recovered.
-- Page **titles** are not encrypted; only content is.
+- Page **titles** and **tags** are not encrypted; only content is.
 - With **Use page** ticked, Ask Claude sends the page's text — including a locked page's, while unlocked — to Claude (through Claude Code or the API, whichever is selected).
 - The Claude account option runs the local `claude` CLI with no tools, no settings, plugins (other than caveman, if ticked) or MCP servers, and no saved session, from an empty temporary folder. It's intended for personal use on your own Mac.
 - Inline video/audio from an unlocked page is written to a temp folder for playback. The folder is cleared on lock and on quit.
