@@ -13,15 +13,16 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var lockRequest: LockRequest?
     @State private var deleteTarget: PageMeta?
-    @State private var query = ""
+    @State private var groupTagsFor: UUID?
     @State private var hits: [SearchHit] = []
 
     var body: some View {
         NavigationSplitView {
             Group {
-                if query.isEmpty { pageList } else { searchResults }
+                if store.searchQuery.isEmpty { pageList } else { searchResults }
             }
-            .searchable(text: $query, placement: .sidebar, prompt: "Search all pages")
+            .searchable(text: $store.searchQuery, placement: .sidebar, prompt: "Search pages or #tags")
+            .safeAreaInset(edge: .top) { tagFilterBar }
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 380)
             .toolbar {
                 ToolbarItemGroup {
@@ -49,9 +50,14 @@ struct ContentView: View {
         .onChange(of: store.renamingID) { id in
             renameText = store.name(of: id) ?? ""
         }
-        .onChange(of: query) { hits = store.search($0) }
-        .onChange(of: store.isUnlocked) { _ in hits = store.search(query) }
-        .onChange(of: store.pages) { _ in hits = store.search(query) }
+        .onChange(of: store.searchQuery) { hits = store.search($0) }
+        .onChange(of: store.isUnlocked) { _ in hits = store.search(store.searchQuery) }
+        .onChange(of: store.pages) { _ in hits = store.search(store.searchQuery) }
+        .onChange(of: store.groups) { _ in hits = store.search(store.searchQuery) }
+        .onChange(of: store.tags) { _ in hits = store.search(store.searchQuery) }
+        .sheet(isPresented: Binding(get: { groupTagsFor != nil }, set: { if !$0 { groupTagsFor = nil } })) {
+            if let id = groupTagsFor { GroupTagsSheet(groupID: id).environmentObject(store) }
+        }
         .sheet(item: $lockRequest) { request in
             LockSheet(request: request).environmentObject(store)
         }
@@ -77,7 +83,7 @@ struct ContentView: View {
                     ForEach(store.pages(in: group.id)) { pageRow($0) }
                         .onInsert(of: [.plainText]) { index, providers in drop(providers, into: group.id, at: index) }
                 } label: {
-                    GroupRow(group: group, pages: store.pages(in: group.id), isUnlocked: store.isUnlocked)
+                    GroupRow(group: group, pages: store.pages(in: group.id), isUnlocked: store.isUnlocked, tags: store.groupTags(group.id))
                         .contentShape(Rectangle())
                         .onDrop(of: [.plainText], isTargeted: nil) { providers in
                             drop(providers, into: group.id, at: nil)
@@ -90,7 +96,7 @@ struct ContentView: View {
     }
 
     private func pageRow(_ page: PageMeta) -> some View {
-        PageRow(page: page, isOpen: store.isAccessible(page))
+        PageRow(page: page, isOpen: store.isAccessible(page), tags: store.effectiveTags(of: page))
             .tag(page.id)
             .contextMenu { menu(for: page) }
             .itemProvider { NSItemProvider(object: page.id.uuidString as NSString) }
@@ -109,6 +115,26 @@ struct ContentView: View {
         Binding(
             get: { store.groups.first { $0.id == groupID }?.isExpanded ?? true },
             set: { store.setExpanded(groupID, $0) })
+    }
+
+    /// Tag chips under the search field; clicking one adds or removes it as a #filter.
+    @ViewBuilder
+    private var tagFilterBar: some View {
+        if !store.tags.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(store.tags.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { tag in
+                        let active = store.searchQuery.split(whereSeparator: \.isWhitespace)
+                            .contains { $0.caseInsensitiveCompare("#\(tag.name)") == .orderedSame }
+                        TagChip(tag: tag, onTap: { store.toggleTagFilter(tag) })
+                            .opacity(active || store.searchQuery.isEmpty ? 1 : 0.45)
+                            .overlay(Capsule().stroke(Color.primary.opacity(active ? 0.6 : 0), lineWidth: 1.5))
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            }
+        }
     }
 
     private var searchResults: some View {
@@ -202,6 +228,7 @@ struct ContentView: View {
         let pages = store.pages(in: group.id)
         Button("New Page in Group") { store.addPage(inGroup: group.id) }
         Button("Rename Group…") { store.renamingID = group.id }
+        Button("Tags…") { groupTagsFor = group.id }
         Divider()
         Button("Lock All Pages in Group") { requestLock(pages.filter { !$0.isLocked }.map(\.id)) }
             .disabled(!pages.contains { !$0.isLocked })
@@ -217,6 +244,7 @@ struct GroupRow: View {
     let group: PageGroup
     let pages: [PageMeta]
     let isUnlocked: Bool
+    var tags: [Tag] = []
 
     private var allLocked: Bool { !pages.isEmpty && pages.allSatisfy(\.isLocked) }
 
@@ -224,6 +252,7 @@ struct GroupRow: View {
         HStack(spacing: 6) {
             Label(group.name, systemImage: "folder").lineLimit(1)
             Spacer()
+            if !tags.isEmpty { TagDots(tags: tags) }
             if allLocked {
                 Image(systemName: isUnlocked ? "lock.open.fill" : "lock.fill")
                     .font(.caption)
@@ -238,10 +267,15 @@ struct GroupRow: View {
 struct PageRow: View {
     let page: PageMeta
     let isOpen: Bool
+    var tags: [Tag] = []
 
     var body: some View {
         Label {
-            Text(page.title).lineLimit(1)
+            HStack(spacing: 6) {
+                Text(page.title).lineLimit(1)
+                Spacer(minLength: 0)
+                if !tags.isEmpty { TagDots(tags: tags) }
+            }
         } icon: {
             Image(systemName: page.isLocked ? (isOpen ? "lock.open.fill" : "lock.fill") : "doc.text")
         }
@@ -258,6 +292,8 @@ struct PageDetail: View {
         Group {
             if accessible {
                 VStack(spacing: 0) {
+                    TagBar(page: page)
+                    Divider()
                     AskClaudeBar(pageID: page.id).id(page.id)
                     Divider()
                     RichTextEditor(pageID: page.id, store: store, reveal: store.pendingReveal).id(page.id)

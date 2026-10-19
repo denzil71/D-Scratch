@@ -11,6 +11,8 @@ struct PageMeta: Codable, Identifiable, Hashable {
     var salt: Data?
     /// nil = not in a group.
     var groupID: UUID?
+    /// Tags applied to this page directly (optional so older index files still decode).
+    var tagIDs: [UUID]?
 
     var isLegacyLocked: Bool { isLocked && salt != nil }
 }
@@ -19,6 +21,38 @@ struct PageGroup: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var isExpanded = true
+    /// Tags applied to the group; every page in it inherits them.
+    var tagIDs: [UUID]?
+}
+
+struct Tag: Codable, Identifiable, Hashable {
+    var id = UUID()
+    /// One word: spaces become hyphens, so it can be searched as #name.
+    var name: String
+    /// sRGB hex, e.g. "#4F8EF7".
+    var color: String
+
+    /// A random, fairly saturated colour that reads well with white or black text.
+    static func randomColor() -> String {
+        let color = NSColor(
+            hue: .random(in: 0..<1), saturation: .random(in: 0.45...0.7), brightness: .random(in: 0.75...0.92), alpha: 1)
+        return color.hexString
+    }
+}
+
+extension NSColor {
+    var hexString: String {
+        let c = usingColorSpace(.sRGB) ?? self
+        return String(format: "#%02X%02X%02X", Int(round(c.redComponent * 255)), Int(round(c.greenComponent * 255)),
+                      Int(round(c.blueComponent * 255)))
+    }
+
+    convenience init?(hex: String) {
+        let digits = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard digits.count == 6, let value = Int(digits, radix: 16) else { return nil }
+        self.init(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255,
+                  blue: CGFloat(value & 255) / 255, alpha: 1)
+    }
 }
 
 /// The master password wraps a random data key; locked pages are encrypted with the data key,
@@ -64,6 +98,9 @@ final class Store: ObservableObject {
     @Published var selection: UUID?
     /// A page or group being renamed.
     @Published var renamingID: UUID?
+    @Published var tags: [Tag] = []
+    /// The sidebar search text; `#name` words filter by tag.
+    @Published var searchQuery = ""
     @Published var pendingReveal: Reveal?
     @Published private(set) var hasMasterPassword = false
     @Published private(set) var isUnlocked = false
@@ -80,6 +117,7 @@ final class Store: ObservableObject {
     private var pagesDir: URL { root.appendingPathComponent("pages", isDirectory: true) }
     private var indexURL: URL { root.appendingPathComponent("index.json") }
     private var groupsURL: URL { root.appendingPathComponent("groups.json") }
+    private var tagsURL: URL { root.appendingPathComponent("tags.json") }
     private var vaultURL: URL { root.appendingPathComponent("vault.json") }
 
     /// `root` (or the DSCRATCH_DATA_DIR environment variable) overrides the data folder, for testing.
@@ -462,13 +500,25 @@ final class Store: ObservableObject {
     // MARK: Search
 
     /// Case- and diacritic-insensitive search over titles and text of every page that is currently readable.
+    /// Searches every readable page. Words starting with `#` filter by tag (prefix match on any of the
+    /// page's own or group tags, all must match); the remaining words are searched case- and
+    /// diacritic-insensitively in titles and text. With only tags, every matching page is listed.
     func search(_ query: String) -> [SearchHit] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return [] }
+        let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        let tagFilters = words.filter { $0.hasPrefix("#") && $0.count > 1 }.map { $0.dropFirst().lowercased() }
+        let needle = words.filter { !$0.hasPrefix("#") }.joined(separator: " ")
+        guard !needle.isEmpty || !tagFilters.isEmpty else { return [] }
         flushAll()
         let options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
         var hits: [SearchHit] = []
         for page in pages where isAccessible(page) {
+            let names = effectiveTags(of: page).map { $0.name.lowercased() }
+            guard tagFilters.allSatisfy({ filter in names.contains { $0.hasPrefix(filter) } }) else { continue }
+            if needle.isEmpty {
+                let label = effectiveTags(of: page).map { "#\($0.name)" }.joined(separator: " ")
+                hits.append(SearchHit(pageID: page.id, snippet: AttributedString(label), range: nil))
+                continue
+            }
             if page.title.range(of: needle, options: options) != nil {
                 hits.append(SearchHit(pageID: page.id, snippet: AttributedString("Title match"), range: nil))
             }
@@ -484,6 +534,117 @@ final class Store: ObservableObject {
             }
         }
         return hits
+    }
+
+    /// Adds `#name` to the search, or removes it if it's already there.
+    func toggleTagFilter(_ tag: Tag) {
+        let token = "#\(tag.name)"
+        var words = searchQuery.split(whereSeparator: \.isWhitespace).map(String.init)
+        if let i = words.firstIndex(where: { $0.caseInsensitiveCompare(token) == .orderedSame }) {
+            words.remove(at: i)
+        } else {
+            words.append(token)
+        }
+        searchQuery = words.joined(separator: " ")
+    }
+
+    // MARK: Tags
+
+    func tag(_ id: UUID) -> Tag? { tags.first { $0.id == id } }
+
+    /// Tags on the page itself, then tags inherited from its group (not repeated).
+    func pageTags(_ page: PageMeta) -> [Tag] { (page.tagIDs ?? []).compactMap(tag) }
+
+    func groupTags(_ groupID: UUID?) -> [Tag] {
+        (groups.first { $0.id == groupID }?.tagIDs ?? []).compactMap(tag)
+    }
+
+    func inheritedTags(of page: PageMeta) -> [Tag] {
+        let own = Set(page.tagIDs ?? [])
+        return groupTags(page.groupID).filter { !own.contains($0.id) }
+    }
+
+    func effectiveTags(of page: PageMeta) -> [Tag] { pageTags(page) + inheritedTags(of: page) }
+
+    /// Tag names are one word without a leading #.
+    static func normalizedTagName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            .components(separatedBy: .whitespaces).filter { !$0.isEmpty }.joined(separator: "-")
+    }
+
+    /// Returns the existing tag with this name (any case), or creates one with a random colour.
+    @discardableResult
+    func createTag(named name: String) -> Tag? {
+        let clean = Self.normalizedTagName(name)
+        guard !clean.isEmpty else { return nil }
+        if let existing = tags.first(where: { $0.name.caseInsensitiveCompare(clean) == .orderedSame }) { return existing }
+        let tag = Tag(name: clean, color: Tag.randomColor())
+        tags.append(tag)
+        saveTags()
+        return tag
+    }
+
+    func renameTag(_ id: UUID, to name: String) {
+        let clean = Self.normalizedTagName(name)
+        guard !clean.isEmpty, let i = tags.firstIndex(where: { $0.id == id }),
+              !tags.contains(where: { $0.id != id && $0.name.caseInsensitiveCompare(clean) == .orderedSame })
+        else { return }
+        tags[i].name = clean
+        saveTags()
+    }
+
+    func setTagColor(_ id: UUID, _ color: String) {
+        guard let i = tags.firstIndex(where: { $0.id == id }), tags[i].color != color else { return }
+        tags[i].color = color
+        saveTags()
+    }
+
+    /// Deletes the tag and removes it from every page and group.
+    func deleteTag(_ id: UUID) {
+        tags.removeAll { $0.id == id }
+        for i in pages.indices { pages[i].tagIDs?.removeAll { $0 == id } }
+        for i in groups.indices { groups[i].tagIDs?.removeAll { $0 == id } }
+        saveTags()
+        saveIndex()
+        saveGroups()
+    }
+
+    /// Pages and groups using the tag directly.
+    func usageCount(of id: UUID) -> Int {
+        pages.filter { $0.tagIDs?.contains(id) == true }.count + groups.filter { $0.tagIDs?.contains(id) == true }.count
+    }
+
+    func addTag(_ tagID: UUID, toPage pageID: UUID) {
+        guard let i = index(of: pageID), !(pages[i].tagIDs ?? []).contains(tagID) else { return }
+        pages[i].tagIDs = (pages[i].tagIDs ?? []) + [tagID]
+        saveIndex()
+    }
+
+    func removeTag(_ tagID: UUID, fromPage pageID: UUID) {
+        guard let i = index(of: pageID) else { return }
+        pages[i].tagIDs?.removeAll { $0 == tagID }
+        saveIndex()
+    }
+
+    func addTag(_ tagID: UUID, toGroup groupID: UUID) {
+        guard let g = groups.firstIndex(where: { $0.id == groupID }), !(groups[g].tagIDs ?? []).contains(tagID) else { return }
+        groups[g].tagIDs = (groups[g].tagIDs ?? []) + [tagID]
+        saveGroups()
+    }
+
+    func removeTag(_ tagID: UUID, fromGroup groupID: UUID) {
+        guard let g = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[g].tagIDs?.removeAll { $0 == tagID }
+        saveGroups()
+    }
+
+    private func saveTags() {
+        do {
+            try JSONEncoder().encode(tags).write(to: tagsURL, options: .atomic)
+        } catch {
+            NSLog("D-Scratch: tags save failed: \(error)")
+        }
     }
 
     func reveal(_ hit: SearchHit) {
@@ -525,6 +686,10 @@ final class Store: ObservableObject {
         if let data = try? Data(contentsOf: groupsURL),
            let saved = try? JSONDecoder().decode([PageGroup].self, from: data) {
             groups = saved
+        }
+        if let data = try? Data(contentsOf: tagsURL),
+           let saved = try? JSONDecoder().decode([Tag].self, from: data) {
+            tags = saved
         }
         // Pages pointing at a missing group fall back to the top level.
         let known = Set(groups.map(\.id))

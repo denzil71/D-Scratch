@@ -4,6 +4,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             SecuritySettings().tabItem { Label("Security", systemImage: "lock") }
+            TagSettings().tabItem { Label("Tags", systemImage: "tag") }
             CodeSettings().tabItem { Label("Code", systemImage: "chevron.left.forwardslash.chevron.right") }
             ClaudeSettings().tabItem { Label("Claude", systemImage: "sparkles") }
         }
