@@ -6,6 +6,9 @@ struct AskClaudeBar: View {
     let pageID: UUID
 
     @AppStorage(Prefs.claudeModel) private var model = Prefs.defaultModel
+    @AppStorage(Prefs.claudeBackend) private var backend = "claudeCode"
+    @AppStorage(Prefs.claudeCodeModel) private var claudeCodeModel = "default"
+    @AppStorage(Prefs.claudeUseCaveman) private var useCaveman = false
     @AppStorage(Prefs.claudeIncludePage) private var includePage = true
     @State private var question = ""
     @State private var asked = ""
@@ -68,20 +71,26 @@ struct AskClaudeBar: View {
     private func ask() {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !isRunning else { return }
-        guard let apiKey = Keychain.get(Keychain.apiKeyAccount), !apiKey.isEmpty else {
-            phase = .failed("Add your Claude API key in Settings (⌘,).")
-            return
-        }
         let pageText = includePage
             ? store.activeTextView?.string.replacingOccurrences(of: "\u{FFFC}", with: "")
             : nil
+        let stream: AsyncThrowingStream<String, Error>
+        if backend == "api" {
+            guard let apiKey = Keychain.get(Keychain.apiKeyAccount), !apiKey.isEmpty else {
+                phase = .failed("Add your Claude API key in Settings (⌘,), or switch to your Claude account there.")
+                return
+            }
+            stream = ClaudeClient.stream(apiKey: apiKey, model: model, question: q, pageText: pageText)
+        } else {
+            stream = ClaudeCodeClient.stream(
+                model: claudeCodeModel, question: q, pageText: pageText, caveman: useCaveman)
+        }
         asked = q
         answer = ""
         phase = .waiting
-        let model = self.model
         task = Task {
             do {
-                for try await chunk in ClaudeClient.stream(apiKey: apiKey, model: model, question: q, pageText: pageText) {
+                for try await chunk in stream {
                     answer += chunk
                     phase = .streaming
                     store.noteActivity()

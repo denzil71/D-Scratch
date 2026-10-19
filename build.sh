@@ -14,6 +14,8 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
 codesign --force --sign - "$APP"
+# Register with Launch Services so Finder lists it under "Open With".
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 echo "Built $APP"
 
 [[ "${1:-}" == "--open" ]] && open "$APP"

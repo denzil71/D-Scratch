@@ -1,9 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// A request to lock a page that first needs the master password created or entered.
+/// A request to lock pages that first needs the master password created or entered.
 struct LockRequest: Identifiable {
     let id = UUID()
-    let pageID: UUID
+    let pageIDs: [UUID]
     let createPassword: Bool
 }
 
@@ -23,20 +24,22 @@ struct ContentView: View {
             .searchable(text: $query, placement: .sidebar, prompt: "Search all pages")
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 380)
             .toolbar {
-                ToolbarItem {
-                    Button { store.addPage() } label: { Label("New Page", systemImage: "plus") }
+                ToolbarItemGroup {
+                    Button { store.addGroup() } label: { Label("New Group", systemImage: "folder.badge.plus") }
+                        .help("New group (⇧⌘N)")
+                    Button { store.addPageNearSelection() } label: { Label("New Page", systemImage: "plus") }
                         .help("New page (⌘N)")
                 }
             }
         } detail: {
             if let page = store.page(store.selection) {
-                PageDetail(page: page, requestLock: requestLock)
+                PageDetail(page: page, requestLock: { requestLock([$0.id]) })
             } else {
                 Text("Select or create a page").foregroundStyle(.secondary)
             }
         }
-        .alert("Rename Page", isPresented: renameBinding) {
-            TextField("Title", text: $renameText)
+        .alert("Rename", isPresented: renameBinding) {
+            TextField("Name", text: $renameText)
             Button("Rename") {
                 if let id = store.renamingID { store.rename(id, to: renameText) }
                 store.renamingID = nil
@@ -44,7 +47,7 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { store.renamingID = nil }
         }
         .onChange(of: store.renamingID) { id in
-            renameText = store.page(id)?.title ?? ""
+            renameText = store.name(of: id) ?? ""
         }
         .onChange(of: query) { hits = store.search($0) }
         .onChange(of: store.isUnlocked) { _ in hits = store.search(query) }
@@ -61,15 +64,51 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Sidebar
+
+    /// Top-level pages, then each group. Rows drag by page id; dropping on a list position
+    /// or a group header moves the page there.
     private var pageList: some View {
         List(selection: $store.selection) {
-            ForEach(store.pages) { page in
-                PageRow(page: page, isOpen: store.isAccessible(page))
-                    .tag(page.id)
-                    .contextMenu { menu(for: page) }
+            ForEach(store.pages(in: nil)) { pageRow($0) }
+                .onInsert(of: [.plainText]) { index, providers in drop(providers, into: nil, at: index) }
+            ForEach(store.groups) { group in
+                DisclosureGroup(isExpanded: expandedBinding(group.id)) {
+                    ForEach(store.pages(in: group.id)) { pageRow($0) }
+                        .onInsert(of: [.plainText]) { index, providers in drop(providers, into: group.id, at: index) }
+                } label: {
+                    GroupRow(group: group, pages: store.pages(in: group.id), isUnlocked: store.isUnlocked)
+                        .contentShape(Rectangle())
+                        .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                            drop(providers, into: group.id, at: nil)
+                            return true
+                        }
+                        .contextMenu { groupMenu(group) }
+                }
             }
-            .onMove { store.move(from: $0, to: $1) }
         }
+    }
+
+    private func pageRow(_ page: PageMeta) -> some View {
+        PageRow(page: page, isOpen: store.isAccessible(page))
+            .tag(page.id)
+            .contextMenu { menu(for: page) }
+            .itemProvider { NSItemProvider(object: page.id.uuidString as NSString) }
+    }
+
+    private func drop(_ providers: [NSItemProvider], into groupID: UUID?, at index: Int?) {
+        for provider in providers {
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let string = object as? NSString, let id = UUID(uuidString: string as String) else { return }
+                Task { @MainActor in store.movePage(id, toGroup: groupID, at: index) }
+            }
+        }
+    }
+
+    private func expandedBinding(_ groupID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { store.groups.first { $0.id == groupID }?.isExpanded ?? true },
+            set: { store.setExpanded(groupID, $0) })
     }
 
     private var searchResults: some View {
@@ -81,7 +120,7 @@ struct ContentView: View {
                 Text("No matches").foregroundStyle(.secondary)
             }
             ForEach(pageIDs, id: \.self) { pageID in
-                Section(store.page(pageID)?.title ?? "") {
+                Section(resultTitle(pageID)) {
                     ForEach(hits.filter { $0.pageID == pageID }) { hit in
                         Button { store.reveal(hit) } label: {
                             Text(hit.snippet)
@@ -100,6 +139,12 @@ struct ContentView: View {
         }
     }
 
+    private func resultTitle(_ pageID: UUID) -> String {
+        guard let page = store.page(pageID) else { return "" }
+        guard let group = store.name(of: page.groupID) else { return page.title }
+        return "\(group) › \(page.title)"
+    }
+
     private var renameBinding: Binding<Bool> {
         Binding(get: { store.renamingID != nil }, set: { if !$0 { store.renamingID = nil } })
     }
@@ -108,23 +153,40 @@ struct ContentView: View {
         Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })
     }
 
-    private func requestLock(_ page: PageMeta) {
+    private func requestLock(_ pageIDs: [UUID]) {
+        guard !pageIDs.isEmpty else { return }
         if !store.hasMasterPassword {
-            lockRequest = LockRequest(pageID: page.id, createPassword: true)
+            lockRequest = LockRequest(pageIDs: pageIDs, createPassword: true)
         } else if !store.isUnlocked {
-            lockRequest = LockRequest(pageID: page.id, createPassword: false)
+            lockRequest = LockRequest(pageIDs: pageIDs, createPassword: false)
         } else {
-            store.lockPage(page.id)
+            store.lockPages(pageIDs)
         }
     }
+
+    // MARK: Context menus
 
     @ViewBuilder
     private func menu(for page: PageMeta) -> some View {
         let accessible = store.isAccessible(page)
         Button("Rename…") { store.renamingID = page.id }.disabled(!accessible)
+        Menu("Move to Group") {
+            Button("No Group") { store.movePage(page.id, toGroup: nil) }
+                .disabled(page.groupID == nil)
+            Divider()
+            ForEach(store.groups) { group in
+                Button(group.name) { store.movePage(page.id, toGroup: group.id) }
+                    .disabled(page.groupID == group.id)
+            }
+            Divider()
+            Button("New Group") {
+                store.addGroup()
+                if let group = store.groups.last { store.movePage(page.id, toGroup: group.id) }
+            }
+        }
         Divider()
         if !page.isLocked {
-            Button("Lock Page") { requestLock(page) }
+            Button("Lock Page") { requestLock([page.id]) }
         } else if accessible {
             Button("Remove Lock") { store.removeLock(page.id) }
         }
@@ -133,6 +195,43 @@ struct ContentView: View {
         }
         Divider()
         Button("Delete…", role: .destructive) { deleteTarget = page }.disabled(!accessible)
+    }
+
+    @ViewBuilder
+    private func groupMenu(_ group: PageGroup) -> some View {
+        let pages = store.pages(in: group.id)
+        Button("New Page in Group") { store.addPage(inGroup: group.id) }
+        Button("Rename Group…") { store.renamingID = group.id }
+        Divider()
+        Button("Lock All Pages in Group") { requestLock(pages.filter { !$0.isLocked }.map(\.id)) }
+            .disabled(!pages.contains { !$0.isLocked })
+        if store.isUnlocked && pages.contains(where: { $0.isLocked && !$0.isLegacyLocked }) {
+            Button("Remove Locks in Group") { pages.filter(\.isLocked).forEach { store.removeLock($0.id) } }
+        }
+        Divider()
+        Button("Delete Group (Keep Pages)") { store.removeGroup(group.id) }
+    }
+}
+
+struct GroupRow: View {
+    let group: PageGroup
+    let pages: [PageMeta]
+    let isUnlocked: Bool
+
+    private var allLocked: Bool { !pages.isEmpty && pages.allSatisfy(\.isLocked) }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label(group.name, systemImage: "folder").lineLimit(1)
+            Spacer()
+            if allLocked {
+                Image(systemName: isUnlocked ? "lock.open.fill" : "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Every page in this group is locked")
+            }
+            Text("\(pages.count)").font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -273,7 +372,7 @@ struct LockSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Lock Page", action: submit)
+                Button(request.pageIDs.count == 1 ? "Lock Page" : "Lock \(request.pageIDs.count) Pages", action: submit)
                     .keyboardShortcut(.defaultAction)
                     .disabled(password.isEmpty || (request.createPassword && password != confirm))
             }
@@ -291,7 +390,7 @@ struct LockSheet: View {
             password = ""
             return
         }
-        store.lockPage(request.pageID)
+        store.lockPages(request.pageIDs)
         dismiss()
     }
 }

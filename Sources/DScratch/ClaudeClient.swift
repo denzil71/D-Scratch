@@ -80,6 +80,12 @@ enum ClaudeClient {
         }
     }
 
+    /// The question, with the page attached as context when given.
+    static func userContent(question: String, pageText: String?) -> String {
+        guard let pageText, !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return question }
+        return "Here is my current page:\n<page>\n\(pageText)\n</page>\n\n\(question)"
+    }
+
     private static func makeRequest(apiKey: String, model: String, question: String, pageText: String?) throws -> URLRequest {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -88,10 +94,7 @@ enum ClaudeClient {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
-        var content = question
-        if let pageText, !pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            content = "Here is my current page:\n<page>\n\(pageText)\n</page>\n\n\(question)"
-        }
+        let content = userContent(question: question, pageText: pageText)
         var body: [String: Any] = [
             "model": model,
             "max_tokens": 64000,

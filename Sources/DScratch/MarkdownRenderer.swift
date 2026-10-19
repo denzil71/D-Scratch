@@ -12,8 +12,8 @@ enum MarkdownRenderer {
                 continue
             }
             if inFence {
-                out.append(NSAttributedString(
-                    string: rawLine + "\n", attributes: [.font: mono, .foregroundColor: NSColor.textColor]))
+                // Becomes a boxed, highlighted code block once inserted into a page.
+                out.append(NSAttributedString(string: rawLine + "\n", attributes: CodeFormat.attributes()))
                 continue
             }
             var line = rawLine
