@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PageMeta: Codable, Identifiable, Hashable {
     var id = UUID()
@@ -8,8 +9,16 @@ struct PageMeta: Codable, Identifiable, Hashable {
     var isLocked = false
     /// Set only on pages locked by v0.1 with their own password; nil once moved to the master password.
     var salt: Data?
+    /// nil = not in a group.
+    var groupID: UUID?
 
     var isLegacyLocked: Bool { isLocked && salt != nil }
+}
+
+struct PageGroup: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    var isExpanded = true
 }
 
 /// The master password wraps a random data key; locked pages are encrypted with the data key,
@@ -37,15 +46,23 @@ enum Prefs {
     static let autoLockMinutes = "autoLockMinutes"
     static let claudeModel = "claudeModel"
     static let claudeIncludePage = "claudeIncludePage"
+    static let codeTheme = "codeTheme"
+    /// "claudeCode" (Claude account via the Claude Code CLI) or "api" (API key).
+    static let claudeBackend = "claudeBackend"
+    static let claudeCodeModel = "claudeCodeModel"
+    static let claudeUseCaveman = "claudeUseCaveman"
     static let defaultModel = "claude-opus-5-5"
 }
 
 /// Owns the page list and all reads/writes to disk.
-/// Layout: ~/Library/Application Support/D-Scratch/{index.json, vault.json, pages/<id>.page | <id>.locked}
+/// Layout: ~/Library/Application Support/D-Scratch/{index.json, groups.json, vault.json, pages/<id>.page | <id>.locked}
 @MainActor
 final class Store: ObservableObject {
+    /// Order within this array is the sidebar order within each group.
     @Published var pages: [PageMeta] = []
+    @Published var groups: [PageGroup] = []
     @Published var selection: UUID?
+    /// A page or group being renamed.
     @Published var renamingID: UUID?
     @Published var pendingReveal: Reveal?
     @Published private(set) var hasMasterPassword = false
@@ -62,14 +79,20 @@ final class Store: ObservableObject {
     private let root: URL
     private var pagesDir: URL { root.appendingPathComponent("pages", isDirectory: true) }
     private var indexURL: URL { root.appendingPathComponent("index.json") }
+    private var groupsURL: URL { root.appendingPathComponent("groups.json") }
     private var vaultURL: URL { root.appendingPathComponent("vault.json") }
 
-    /// `root` overrides the data folder (used by tests).
+    /// `root` (or the DSCRATCH_DATA_DIR environment variable) overrides the data folder, for testing.
     init(root: URL? = nil) {
+        let root = root ?? ProcessInfo.processInfo.environment["DSCRATCH_DATA_DIR"].map { URL(fileURLWithPath: $0) }
         UserDefaults.standard.register(defaults: [
             Prefs.autoLockMinutes: 5,
             Prefs.claudeModel: Prefs.defaultModel,
             Prefs.claudeIncludePage: true,
+            Prefs.codeTheme: CodeTheme.automaticID,
+            Prefs.claudeBackend: "claudeCode",
+            Prefs.claudeCodeModel: "default",
+            Prefs.claudeUseCaveman: false,
         ])
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.root = root ?? support.appendingPathComponent("D-Scratch", isDirectory: true)
@@ -150,24 +173,133 @@ final class Store: ObservableObject {
 
     // MARK: Page list
 
-    func addPage() {
-        let page = PageMeta(title: "Untitled")
-        pages.append(page)
+    func pages(in groupID: UUID?) -> [PageMeta] { pages.filter { $0.groupID == groupID } }
+
+    func addPage(inGroup groupID: UUID? = nil) {
+        let page = PageMeta(title: "Untitled", groupID: groupID)
+        if let last = pages.lastIndex(where: { $0.groupID == groupID }) {
+            pages.insert(page, at: last + 1)
+        } else {
+            pages.append(page)
+        }
         saveIndex()
+        if let groupID { setExpanded(groupID, true) }
         selection = page.id
         renamingID = page.id
     }
 
-    func rename(_ id: UUID, to title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let i = index(of: id), !trimmed.isEmpty else { return }
-        pages[i].title = trimmed
+    /// Open With / dropped on the Dock icon: a new top-level page named after the file.
+    func importFile(_ url: URL) {
+        let page = PageMeta(title: url.deletingPathExtension().lastPathComponent)
+        pages.append(page)
         saveIndex()
+        saveContent(page.id, Self.importedContent(url))
+        selection = page.id
     }
 
-    func move(from source: IndexSet, to destination: Int) {
-        pages.move(fromOffsets: source, toOffset: destination)
+    static func importedContent(_ url: URL) -> NSAttributedString {
+        let type = UTType(filenameExtension: url.pathExtension) ?? .data
+        func text() -> String? {
+            var encoding = String.Encoding.utf8
+            return (try? String(contentsOf: url, usedEncoding: &encoding)) ?? (try? String(contentsOf: url, encoding: .isoLatin1))
+        }
+        func code(_ string: String) -> NSAttributedString {
+            var trimmed = string
+            while trimmed.hasSuffix("\n") { trimmed.removeLast() }
+            return NSAttributedString(string: trimmed + "\n", attributes: CodeFormat.attributes())
+        }
+
+        if let kind = MediaAttachment.kind(forFilename: url.lastPathComponent),
+           let wrapper = try? FileWrapper(url: url, options: .immediate) {
+            wrapper.preferredFilename = url.lastPathComponent
+            let result = NSMutableAttributedString(attachment: MediaAttachment(fileWrapper: wrapper, kind: kind))
+            result.append(NSAttributedString(string: "\n", attributes: CodeFormat.bodyAttributes))
+            return result
+        }
+        if [UTType.sourceCode, .script, .shellScript, .json, .xml, .yaml, .propertyList].contains(where: type.conforms(to:)),
+           let string = text() {
+            return code(string)
+        }
+        if let markdown = UTType("net.daringfireball.markdown"), type.conforms(to: markdown), let string = text() {
+            return MarkdownRenderer.render(string)
+        }
+        if type.conforms(to: .plainText), let string = text() {
+            return CodeFormat.looksLikeCode(string)
+                ? code(string)
+                : NSAttributedString(string: string, attributes: CodeFormat.bodyAttributes)
+        }
+        // RTF, RTFD, Word, HTML, OpenDocument…
+        if let rich = try? NSAttributedString(url: url, options: [:], documentAttributes: nil) {
+            return rich
+        }
+        if let string = text() {
+            return NSAttributedString(string: string, attributes: CodeFormat.bodyAttributes)
+        }
+        return NSAttributedString(string: "Couldn't read \(url.lastPathComponent).", attributes: CodeFormat.bodyAttributes)
+    }
+
+    /// New page in the same group as the selected page.
+    func addPageNearSelection() {
+        addPage(inGroup: page(selection)?.groupID)
+    }
+
+    /// Title of the page or group with this id.
+    func name(of id: UUID?) -> String? {
+        page(id)?.title ?? groups.first { $0.id == id }?.name
+    }
+
+    /// Renames a page or a group.
+    func rename(_ id: UUID, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let i = index(of: id) {
+            pages[i].title = trimmed
+            saveIndex()
+        } else if let g = groups.firstIndex(where: { $0.id == id }) {
+            groups[g].name = trimmed
+            saveGroups()
+        }
+    }
+
+    /// Moves a page into `groupID` (nil = no group) at `position` among that group's pages (nil = end).
+    /// `position` counts the page's current slot when it is already in the group, as a list drop does.
+    func movePage(_ id: UUID, toGroup groupID: UUID?, at position: Int? = nil) {
+        guard let from = index(of: id) else { return }
+        if let groupID, !groups.contains(where: { $0.id == groupID }) { return }
+        let before = pages(in: groupID).map(\.id)
+        var target = min(max(position ?? before.count, 0), before.count)
+        if let current = before.firstIndex(of: id), current < target { target -= 1 }
+
+        var page = pages.remove(at: from)
+        page.groupID = groupID
+        let siblings = pages.indices.filter { pages[$0].groupID == groupID }
+        let insertAt = target < siblings.count ? siblings[target] : (siblings.last.map { $0 + 1 } ?? pages.count)
+        pages.insert(page, at: insertAt)
         saveIndex()
+        if let groupID { setExpanded(groupID, true) }
+    }
+
+    // MARK: Groups
+
+    func addGroup() {
+        let group = PageGroup(name: "New Group")
+        groups.append(group)
+        saveGroups()
+        renamingID = group.id
+    }
+
+    func setExpanded(_ groupID: UUID, _ expanded: Bool) {
+        guard let g = groups.firstIndex(where: { $0.id == groupID }), groups[g].isExpanded != expanded else { return }
+        groups[g].isExpanded = expanded
+        saveGroups()
+    }
+
+    /// Deletes the group; its pages move out to the top level.
+    func removeGroup(_ groupID: UUID) {
+        for i in pages.indices where pages[i].groupID == groupID { pages[i].groupID = nil }
+        groups.removeAll { $0.id == groupID }
+        saveIndex()
+        saveGroups()
     }
 
     func delete(_ id: UUID) {
@@ -252,6 +384,11 @@ final class Store: ObservableObject {
     }
 
     // MARK: Page locking (needs the vault unlocked)
+
+    /// Locks every listed page that isn't locked yet.
+    func lockPages(_ ids: [UUID]) {
+        ids.forEach(lockPage)
+    }
 
     func lockPage(_ id: UUID) {
         guard let i = index(of: id), !pages[i].isLocked, let key = dataKey else { return }
@@ -350,6 +487,7 @@ final class Store: ObservableObject {
     }
 
     func reveal(_ hit: SearchHit) {
+        if let groupID = page(hit.pageID)?.groupID { setExpanded(groupID, true) }
         selection = hit.pageID
         if let range = hit.range { pendingReveal = Reveal(pageID: hit.pageID, range: range) }
     }
@@ -384,6 +522,23 @@ final class Store: ObservableObject {
         guard let data = try? Data(contentsOf: indexURL),
               let list = try? JSONDecoder().decode([PageMeta].self, from: data) else { return }
         pages = list
+        if let data = try? Data(contentsOf: groupsURL),
+           let saved = try? JSONDecoder().decode([PageGroup].self, from: data) {
+            groups = saved
+        }
+        // Pages pointing at a missing group fall back to the top level.
+        let known = Set(groups.map(\.id))
+        for i in pages.indices where pages[i].groupID.map({ !known.contains($0) }) ?? false {
+            pages[i].groupID = nil
+        }
+    }
+
+    private func saveGroups() {
+        do {
+            try JSONEncoder().encode(groups).write(to: groupsURL, options: .atomic)
+        } catch {
+            NSLog("D-Scratch: groups save failed: \(error)")
+        }
     }
 
     private func saveIndex() {

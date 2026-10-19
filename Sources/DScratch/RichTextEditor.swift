@@ -27,6 +27,207 @@ final class DTextView: NSTextView {
         scrollRangeToVisible(NSRange(location: (string as NSString).length, length: 0))
     }
 
+    // MARK: Code blocks
+
+    /// Called when light/dark changes, so code colours can follow an "Automatic" scheme.
+    var onAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+
+    private func isCode(at location: Int) -> Bool {
+        guard let storage = textStorage, location >= 0, location < storage.length else { return false }
+        return CodeFormat.isCode(storage.attributes(at: location, effectiveRange: nil))
+    }
+
+    private var currentParagraph: NSRange {
+        (string as NSString).paragraphRange(for: NSRange(location: selectedRange().location, length: 0))
+    }
+
+    /// Pasted code goes into a code block; pasting inside a block keeps it plain code.
+    override func paste(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+        let hasMedia = pasteboard.canReadObject(forClasses: [NSImage.self], options: nil)
+            || pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        guard !hasMedia, let text = pasteboard.string(forType: .string) else { return super.paste(sender) }
+        if isCode(at: currentParagraph.location) {
+            insertText(NSAttributedString(string: text, attributes: CodeFormat.attributes()), replacementRange: selectedRange())
+        } else if CodeFormat.looksLikeCode(text) {
+            insertCodeBlock(text, replacing: selectedRange())
+        } else {
+            super.paste(sender)
+        }
+    }
+
+    /// Inserts `code` as its own block of paragraphs, followed by normal text.
+    func insertCodeBlock(_ code: String, replacing range: NSRange) {
+        let ns = string as NSString
+        var text = code.replacingOccurrences(of: "\r\n", with: "\n")
+        while text.hasSuffix("\n") || text.hasSuffix(" ") { text.removeLast() }
+        while text.hasPrefix("\n") { text.removeFirst() }
+        let block = NSMutableAttributedString()
+        if range.location > 0 && ns.character(at: range.location - 1) != 10 {
+            block.append(NSAttributedString(string: "\n", attributes: CodeFormat.bodyAttributes))
+        }
+        block.append(NSAttributedString(string: text + "\n", attributes: CodeFormat.attributes()))
+        insertText(block, replacementRange: range)
+        typingAttributes = CodeFormat.bodyAttributes
+    }
+
+    /// Format › Code Block: turns the selected paragraphs into a code block, or back into text.
+    @objc func toggleCodeBlock(_ sender: Any?) {
+        guard let storage = textStorage else { return }
+        let paragraphs = (string as NSString).paragraphRange(for: selectedRange())
+        guard paragraphs.length > 0 else {
+            typingAttributes = CodeFormat.isCode(typingAttributes) ? CodeFormat.bodyAttributes : CodeFormat.attributes()
+            return
+        }
+        var allCode = true
+        (string as NSString).enumerateSubstrings(in: paragraphs, options: [.byParagraphs, .substringNotRequired]) {
+            _, _, enclosing, _ in
+            if !self.isCode(at: enclosing.location) { allCode = false }
+        }
+        guard shouldChangeText(in: paragraphs, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.removeAttribute(.backgroundColor, range: paragraphs)
+        storage.addAttributes(allCode ? CodeFormat.bodyAttributes : CodeFormat.attributes(), range: paragraphs)
+        storage.endEditing()
+        didChangeText()
+    }
+
+    /// Typing outside a code block must not continue in code (e.g. on the empty line after a block).
+    func syncTypingAttributes() {
+        guard selectedRange().length == 0, CodeFormat.isCode(typingAttributes) else { return }
+        let paragraph = currentParagraph
+        if paragraph.length == 0 || !isCode(at: paragraph.location) {
+            typingAttributes = CodeFormat.bodyAttributes
+        }
+    }
+
+    /// Absolute character ranges of the visual lines of the paragraph containing `location`.
+    /// Excludes the empty virtual line TextKit 2 appends to the last paragraph after a final newline.
+    private func lineRanges(ofParagraphAt location: Int) -> [NSRange] {
+        guard let tlm = textLayoutManager, let tcm = tlm.textContentManager,
+              let textLocation = tcm.location(tcm.documentRange.location, offsetBy: location),
+              let fragment = tlm.textLayoutFragment(for: textLocation) else { return [] }
+        let start = tcm.offset(from: tcm.documentRange.location, to: fragment.rangeInElement.location)
+        return fragment.textLineFragments.filter { $0.characterRange.length > 0 }.map {
+            NSRange(location: start + $0.characterRange.location, length: $0.characterRange.length)
+        }
+    }
+
+    /// The first paragraph is code, so there is no text line above it.
+    private var codeBlockAtTop: Bool { isCode(at: 0) }
+
+    /// The page ends with a code block. The virtual line after a final newline doesn't count:
+    /// TextKit 2 draws its caret inside the block, so a real text line is added instead.
+    private var codeBlockAtBottom: Bool {
+        let length = (string as NSString).length
+        return length > 0 && isCode(at: (string as NSString).paragraphRange(
+            for: NSRange(location: length - 1, length: 0)).location)
+    }
+
+    private func addTextLineAbove() {
+        insertText(NSAttributedString(string: "\n", attributes: CodeFormat.bodyAttributes),
+                   replacementRange: NSRange(location: 0, length: 0))
+        setSelectedRange(NSRange(location: 0, length: 0))
+        typingAttributes = CodeFormat.bodyAttributes
+    }
+
+    /// Ends the block's last line if needed, then adds an empty text paragraph and puts the caret on it.
+    private func addTextLineBelow() {
+        let length = (string as NSString).length
+        let addition = NSMutableAttributedString()
+        if !string.hasSuffix("\n") {
+            addition.append(NSAttributedString(string: "\n", attributes: CodeFormat.attributes()))
+        }
+        addition.append(NSAttributedString(string: "\n", attributes: CodeFormat.bodyAttributes))
+        insertText(addition, replacementRange: NSRange(location: length, length: 0))
+        setSelectedRange(NSRange(location: (string as NSString).length - 1, length: 0))
+        typingAttributes = CodeFormat.bodyAttributes
+    }
+
+    override func moveUp(_ sender: Any?) {
+        let caret = selectedRange()
+        if caret.length == 0, codeBlockAtTop,
+           let firstLine = lineRanges(ofParagraphAt: 0).first, caret.location <= NSMaxRange(firstLine) {
+            return addTextLineAbove()
+        }
+        super.moveUp(sender)
+    }
+
+    override func moveDown(_ sender: Any?) {
+        let caret = selectedRange()
+        let length = (string as NSString).length
+        // Below a final newline the caret is already past the block.
+        let inBlock = caret.location < length || !string.hasSuffix("\n")
+        if caret.length == 0, codeBlockAtBottom, inBlock,
+           let lastLine = lineRanges(ofParagraphAt: max(0, length - 1)).last, caret.location >= lastLine.location {
+            return addTextLineBelow()
+        }
+        super.moveDown(sender)
+    }
+
+    /// Clicking above a block at the top, or below a block at the bottom, adds a text line there.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 1, let tlm = textLayoutManager {
+            let origin = textContainerOrigin
+            let docStart = tlm.documentRange.location
+            if codeBlockAtTop, let first = tlm.textLayoutFragment(for: docStart),
+               point.y < origin.y + first.layoutFragmentFrame.minY + CodeFormat.blockSpacing - 6 {
+                window?.makeFirstResponder(self)
+                return addTextLineAbove()
+            }
+            if codeBlockAtBottom, point.y > origin.y + tlm.usageBoundsForTextContainer.maxY {
+                window?.makeFirstResponder(self)
+                return addTextLineBelow()
+            }
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// "```" + Return starts a code block; Return on an empty last line of a block leaves it.
+    override func insertNewline(_ sender: Any?) {
+        guard let storage = textStorage, selectedRange().length == 0 else { return super.insertNewline(sender) }
+        let ns = string as NSString
+        let paragraph = currentParagraph
+        let line = ns.substring(with: paragraph).trimmingCharacters(in: .newlines)
+
+        if isCode(at: paragraph.location), NSMaxRange(paragraph) == ns.length, !string.hasSuffix("\n"),
+           selectedRange().location == ns.length {
+            // New line at the very end of a final block stays in the block.
+            insertText(NSAttributedString(string: "\n", attributes: CodeFormat.attributes()), replacementRange: selectedRange())
+            typingAttributes = CodeFormat.attributes()
+            return
+        }
+
+        if line.trimmingCharacters(in: .whitespaces).hasPrefix("```"), !isCode(at: paragraph.location) {
+            insertText(NSAttributedString(string: "\n", attributes: CodeFormat.attributes()), replacementRange: paragraph)
+            setSelectedRange(NSRange(location: paragraph.location, length: 0))
+            typingAttributes = CodeFormat.attributes()
+            return
+        }
+
+        let previousIsCode = paragraph.location > 0 && isCode(at: paragraph.location - 1)
+        if line.isEmpty && paragraph.length == 0 && previousIsCode && CodeFormat.isCode(typingAttributes) {
+            // Empty last line at the end of the document.
+            typingAttributes = CodeFormat.bodyAttributes
+            return
+        }
+        if line.isEmpty, isCode(at: paragraph.location), previousIsCode, !isCode(at: NSMaxRange(paragraph)) {
+            if shouldChangeText(in: paragraph, replacementString: nil) {
+                storage.setAttributes(CodeFormat.bodyAttributes, range: paragraph)
+                didChangeText()
+            }
+            typingAttributes = CodeFormat.bodyAttributes
+            return
+        }
+        super.insertNewline(sender)
+    }
+
     @objc func toggleBold(_ sender: Any?) { toggle(.boldFontMask) }
     @objc func toggleItalic(_ sender: Any?) { toggle(.italicFontMask) }
 
@@ -115,7 +316,8 @@ struct RichTextEditor: NSViewRepresentable {
         textView.usesFindBar = true
         textView.usesFontPanel = true
         textView.usesRuler = true
-        textView.usesAdaptiveColorMappingForDarkAppearance = true
+        // Off so code-scheme colours draw exactly; default text uses the dynamic textColor instead.
+        textView.usesAdaptiveColorMappingForDarkAppearance = false
         textView.drawsBackground = true
         textView.backgroundColor = .textBackgroundColor
         textView.textContainerInset = NSSize(width: 24, height: 20)
@@ -130,7 +332,10 @@ struct RichTextEditor: NSViewRepresentable {
         let coordinator = context.coordinator
         if let content = store.loadContent(pageID) {
             textView.textStorage?.setAttributedString(content)
-            if let storage = textView.textStorage { MediaAttachment.upgrade(storage) }
+            if let storage = textView.textStorage {
+                MediaAttachment.upgrade(storage)
+                CodeFormat.normalizeTextColors(storage)
+            }
         } else {
             coordinator.canSave = false
             textView.isEditable = false
@@ -138,7 +343,13 @@ struct RichTextEditor: NSViewRepresentable {
         }
         textView.pageID = pageID
         textView.delegate = coordinator
+        textView.textLayoutManager?.delegate = coordinator
         coordinator.textView = textView
+        coordinator.rehighlight()
+        textView.textStorage?.delegate = coordinator
+        textView.onAppearanceChange = { [weak coordinator] in coordinator?.rehighlight() }
+        NotificationCenter.default.addObserver(
+            coordinator, selector: #selector(Coordinator.themeChanged), name: CodeTheme.changedNotification, object: nil)
         store.activeTextView = textView
         store.registerFlush(pageID, owner: coordinator) { [weak coordinator] in coordinator?.saveNow() }
 
@@ -165,7 +376,7 @@ struct RichTextEditor: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextLayoutManagerDelegate, NSTextStorageDelegate {
         let pageID: UUID
         let store: Store
         weak var textView: DTextView?
@@ -186,9 +397,52 @@ struct RichTextEditor: NSViewRepresentable {
                 MainActor.assumeIsolated { self?.saveNow() }
             }
             // Deferred so the edit that added the attachment finishes first.
+            // (Code is highlighted inside the edit itself, in `willProcessEditing`.)
             DispatchQueue.main.async { [weak self] in
                 if let storage = self?.textView?.textStorage { MediaAttachment.upgrade(storage) }
             }
+        }
+
+        /// Highlights as part of each edit, so the colour changes join that edit's undo step and only
+        /// the edited block is laid out again.
+        nonisolated func textStorage(
+            _ textStorage: NSTextStorage, willProcessEditing editedMask: NSTextStorageEditActions,
+            range editedRange: NSRange, changeInLength delta: Int
+        ) {
+            MainActor.assumeIsolated {
+                guard !isHighlightingAll else { return }
+                CodeFormat.highlight(textStorage, around: editedRange, theme: theme)
+            }
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            textView?.syncTypingAttributes()
+        }
+
+        private var isHighlightingAll = false
+        private var theme = CodeTheme.light
+
+        /// Whole-page pass: on open, and when the scheme or appearance changes.
+        func rehighlight() {
+            guard let textView, let storage = textView.textStorage else { return }
+            theme = CodeTheme.current(for: textView.effectiveAppearance)
+            isHighlightingAll = true
+            CodeFormat.highlightAll(storage, theme: theme)
+            isHighlightingAll = false
+            textView.needsDisplay = true
+        }
+
+        @objc func themeChanged() { rehighlight() }
+
+        nonisolated func textLayoutManager(
+            _ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: NSTextLocation,
+            in textElement: NSTextElement
+        ) -> NSTextLayoutFragment {
+            if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0,
+               CodeFormat.isCode(paragraph.attributedString.attributes(at: 0, effectiveRange: nil)) {
+                return CodeBlockFragment(textElement: textElement, range: textElement.elementRange)
+            }
+            return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
         }
 
         func apply(_ reveal: Reveal?) {
