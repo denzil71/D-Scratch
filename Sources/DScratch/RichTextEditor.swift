@@ -5,6 +5,28 @@ import UniformTypeIdentifiers
 final class DTextView: NSTextView {
     static let defaultFont = NSFont.systemFont(ofSize: 14)
 
+    var pageID: UUID?
+
+    /// Appends a question/answer block at the end of the page as one undoable edit.
+    func appendClaudeAnswer(question: String, answer: String) {
+        let body: [NSAttributedString.Key: Any] = [.font: Self.defaultFont, .foregroundColor: NSColor.textColor]
+        let block = NSMutableAttributedString()
+        if !string.isEmpty && !string.hasSuffix("\n") {
+            block.append(NSAttributedString(string: "\n", attributes: body))
+        }
+        block.append(NSAttributedString(
+            string: "Claude: \(question)\n",
+            attributes: [
+                .font: NSFont.boldSystemFont(ofSize: Self.defaultFont.pointSize),
+                .foregroundColor: NSColor.systemPurple,
+            ]))
+        block.append(MarkdownRenderer.render(answer))
+        block.append(NSAttributedString(string: "\n\n", attributes: body))
+        let end = NSRange(location: (string as NSString).length, length: 0)
+        insertText(block, replacementRange: end)
+        scrollRangeToVisible(NSRange(location: (string as NSString).length, length: 0))
+    }
+
     @objc func toggleBold(_ sender: Any?) { toggle(.boldFontMask) }
     @objc func toggleItalic(_ sender: Any?) { toggle(.italicFontMask) }
 
@@ -79,6 +101,8 @@ final class DTextView: NSTextView {
 struct RichTextEditor: NSViewRepresentable {
     let pageID: UUID
     let store: Store
+    /// A search hit to select and scroll to.
+    let reveal: Reveal?
 
     func makeCoordinator() -> Coordinator { Coordinator(pageID: pageID, store: store) }
 
@@ -112,6 +136,7 @@ struct RichTextEditor: NSViewRepresentable {
             textView.isEditable = false
             textView.string = "This page could not be read."
         }
+        textView.pageID = pageID
         textView.delegate = coordinator
         coordinator.textView = textView
         store.activeTextView = textView
@@ -126,10 +151,13 @@ struct RichTextEditor: NSViewRepresentable {
             textView.window?.makeFirstResponder(textView)
             textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
         }
+        coordinator.apply(reveal)
         return scrollView
     }
 
-    func updateNSView(_ nsView: NSScrollView, context: Context) {}
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        context.coordinator.apply(reveal)
+    }
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
         coordinator.saveNow()
@@ -144,6 +172,7 @@ struct RichTextEditor: NSViewRepresentable {
         var canSave = true
         private var dirty = false
         private var timer: Timer?
+        private var lastReveal: UUID?
 
         init(pageID: UUID, store: Store) {
             self.pageID = pageID
@@ -159,6 +188,23 @@ struct RichTextEditor: NSViewRepresentable {
             // Deferred so the edit that added the attachment finishes first.
             DispatchQueue.main.async { [weak self] in
                 if let storage = self?.textView?.textStorage { MediaAttachment.upgrade(storage) }
+            }
+        }
+
+        func apply(_ reveal: Reveal?) {
+            guard let reveal, reveal.pageID == pageID, reveal.token != lastReveal else { return }
+            lastReveal = reveal.token
+            // Deferred past the initial layout and cursor placement.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let textView = self.textView else { return }
+                let length = (textView.string as NSString).length
+                let location = min(reveal.range.location, length)
+                let range = NSRange(location: location, length: min(reveal.range.length, length - location))
+                textView.window?.makeFirstResponder(textView)
+                textView.setSelectedRange(range)
+                textView.scrollRangeToVisible(range)
+                textView.showFindIndicator(for: range)
+                self.store.pendingReveal = nil
             }
         }
 
