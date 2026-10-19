@@ -59,16 +59,33 @@ Two ways to connect, chosen in **Settings › Claude**:
 | ⇧⌘C | Colour panel |
 | ⌘, | Settings |
 
+## Install
+
+Download the latest `D-Scratch-<version>.dmg` from [Releases](https://github.com/denzil71/D-Scratch/releases), open it and drag **D-Scratch** onto **Applications**. Requires macOS 13 or later; runs on Apple Silicon and Intel Macs.
+
+The app isn't signed with an Apple Developer ID, so macOS blocks it the first time. To open it once:
+- Right-click **D-Scratch** in Applications → **Open** → **Open**, or
+- try to open it, then go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+If macOS says the app "is damaged", remove the download quarantine flag in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/D-Scratch.app
+```
+
 ## Build
 
 Requires macOS 13+ and the Swift toolchain (Xcode or Command Line Tools). The Claude account option also needs [Claude Code](https://claude.com/claude-code) installed and logged in.
 
 ```sh
-./build.sh          # builds build/D-Scratch.app and registers it for Open With
+./build.sh          # builds a universal build/D-Scratch.app and registers it for Open With
 ./build.sh --open   # builds and launches
+./build.sh --dmg    # also packages dist/D-Scratch-<version>.dmg (version from Resources/Info.plist)
 ```
 
-Copy `build/D-Scratch.app` to `/Applications` to install.
+Copy `build/D-Scratch.app` to `/Applications` to install your own build.
+
+To publish a release, bump `CFBundleShortVersionString` in `Resources/Info.plist`, run `./build.sh --dmg`, then attach the DMG to a new GitHub release (Releases → Draft a new release, or `gh release create v<version> dist/D-Scratch-<version>.dmg`).
 
 For testing, set `DSCRATCH_DATA_DIR` to use a different data folder, e.g. `open --env DSCRATCH_DATA_DIR=/tmp/ds -a build/D-Scratch.app`.
 
