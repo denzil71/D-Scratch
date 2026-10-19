@@ -38,8 +38,14 @@ struct DScratchApp: App {
                 Button("Insert Media…") { store.activeTextView?.insertMedia(nil) }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                 Divider()
-                Button("Lock All Pages") { store.lockAll() }.keyboardShortcut("l")
+                Button("Lock All Pages") { store.lockAll() }
+                    .keyboardShortcut("l")
+                    .disabled(!store.isUnlocked)
             }
+        }
+
+        Settings {
+            SettingsView().environmentObject(store)
         }
     }
 
