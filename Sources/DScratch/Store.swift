@@ -339,6 +339,12 @@ final class Store: ObservableObject {
     }
 
     /// Deletes the group; its pages move out to the top level.
+    /// Deletes the group and every page in it.
+    func deleteGroupAndPages(_ groupID: UUID) {
+        for page in pages(in: groupID) { delete(page.id) }
+        removeGroup(groupID)
+    }
+
     func removeGroup(_ groupID: UUID) {
         for i in pages.indices where pages[i].groupID == groupID { pages[i].groupID = nil }
         groups.removeAll { $0.id == groupID }
