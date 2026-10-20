@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var lockRequest: LockRequest?
     @State private var deleteTarget: PageMeta?
+    @State private var deleteGroupTarget: PageGroup?
     @State private var groupTagsFor: UUID?
     @State private var hits: [SearchHit] = []
 
@@ -89,6 +90,20 @@ struct ContentView: View {
                 }
             }
         }
+        .confirmationDialog(
+            "Delete “\(deleteGroupTarget?.name ?? "")” and its pages?",
+            isPresented: Binding(get: { deleteGroupTarget != nil }, set: { if !$0 { deleteGroupTarget = nil } }),
+            presenting: deleteGroupTarget
+        ) { group in
+            Button("Delete Group and \(pageCount(group.id))", role: .destructive) { store.deleteGroupAndPages(group.id) }
+        } message: { group in
+            Text("The group and \(pageCount(group.id).lowercased()) in it will be deleted. This cannot be undone.")
+        }
+    }
+
+    private func pageCount(_ groupID: UUID) -> String {
+        let count = store.pages(in: groupID).count
+        return count == 1 ? "1 Page" : "\(count) Pages"
     }
 
     /// Always-visible New Page / New Group buttons at the bottom of the sidebar.
@@ -255,6 +270,8 @@ struct ContentView: View {
         }
         Divider()
         Button("Delete Group (Keep Pages)") { store.removeGroup(group.id) }
+        Button("Delete Group and Pages…", role: .destructive) { deleteGroupTarget = group }
+            .disabled(pages.contains { !store.isAccessible($0) })
     }
 }
 
