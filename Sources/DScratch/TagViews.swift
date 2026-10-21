@@ -131,7 +131,7 @@ struct TagBar: View {
                         TagChip(tag: tag, onTap: { search(tag) }, onRemove: { store.removeTag(tag.id, fromPage: page.id) })
                     }
                     ForEach(store.inheritedTags(of: page)) { tag in
-                        TagChip(tag: tag, inheritedFrom: store.name(of: page.groupID), onTap: { search(tag) })
+                        TagChip(tag: tag, inheritedFrom: store.tagSource(tag.id, for: page), onTap: { search(tag) })
                     }
                     if store.effectiveTags(of: page).isEmpty {
                         Text("No tags").font(.caption).foregroundStyle(.secondary)
@@ -166,7 +166,7 @@ struct GroupTagsSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Tags for “\(store.name(of: groupID) ?? "Group")”").font(.headline)
-            Text("Every page in this group gets these tags.").font(.callout).foregroundStyle(.secondary)
+            Text("Every page in this group and its subgroups gets these tags.").font(.callout).foregroundStyle(.secondary)
             let tags = store.groupTags(groupID)
             if tags.isEmpty {
                 Text("No tags yet.").font(.caption).foregroundStyle(.secondary)

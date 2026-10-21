@@ -21,8 +21,10 @@ struct PageGroup: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var isExpanded = true
-    /// Tags applied to the group; every page in it inherits them.
+    /// Tags applied to the group; every page in it (and in its subgroups) inherits them.
     var tagIDs: [UUID]?
+    /// The group this one is nested in; nil = top level.
+    var parentID: UUID?
 }
 
 struct Tag: Codable, Identifiable, Hashable {
@@ -292,7 +294,7 @@ final class Store: ObservableObject {
             pages.append(page)
         }
         saveIndex()
-        if let groupID { setExpanded(groupID, true) }
+        if let groupID { expandToShow(groupID: groupID) }
         selection = page.id
         renamingID = page.id
     }
@@ -391,16 +393,99 @@ final class Store: ObservableObject {
         let insertAt = target < siblings.count ? siblings[target] : (siblings.last.map { $0 + 1 } ?? pages.count)
         pages.insert(page, at: insertAt)
         saveIndex()
-        if let groupID { setExpanded(groupID, true) }
+        if let groupID { expandToShow(groupID: groupID) }
     }
 
     // MARK: Groups
 
-    func addGroup() {
-        let group = PageGroup(name: "New Group")
+    /// Adds a group inside `parentID` (nil = top level) and starts renaming it.
+    func addGroup(in parentID: UUID? = nil) {
+        let group = PageGroup(name: "New Group", parentID: parentID)
         groups.append(group)
         saveGroups()
+        if let parentID { expandToShow(groupID: parentID) }
+        selection = group.id
         renamingID = group.id
+    }
+
+    /// New group inside the selected group, or alongside the selected page.
+    func addGroupNearSelection() {
+        addGroup(in: selectionGroupID)
+    }
+
+    func group(_ id: UUID?) -> PageGroup? { groups.first { $0.id == id } }
+
+    /// Direct subgroups of `parentID` (nil = top-level groups), in sidebar order.
+    func childGroups(of parentID: UUID?) -> [PageGroup] { groups.filter { $0.parentID == parentID } }
+
+    /// The group's parent, grandparent, … (nearest first).
+    func ancestors(of groupID: UUID?) -> [PageGroup] {
+        var chain: [PageGroup] = []
+        var current = group(groupID)?.parentID
+        while let id = current, let parent = group(id), !chain.contains(where: { $0.id == id }) {
+            chain.append(parent)
+            current = parent.parentID
+        }
+        return chain
+    }
+
+    /// The group and every group nested inside it.
+    func descendantGroupIDs(of groupID: UUID) -> Set<UUID> {
+        var result: Set<UUID> = [groupID]
+        var frontier = [groupID]
+        while let next = frontier.popLast() {
+            for child in childGroups(of: next) where !result.contains(child.id) {
+                result.insert(child.id)
+                frontier.append(child.id)
+            }
+        }
+        return result
+    }
+
+    /// Pages in the group and all its subgroups.
+    func allPages(in groupID: UUID) -> [PageMeta] {
+        let ids = descendantGroupIDs(of: groupID)
+        return pages.filter { $0.groupID.map(ids.contains) ?? false }
+    }
+
+    /// "Work › Clients" for a nested group.
+    func path(of groupID: UUID?) -> String? {
+        guard let group = group(groupID) else { return nil }
+        return (ancestors(of: group.id).reversed().map(\.name) + [group.name]).joined(separator: " › ")
+    }
+
+    /// Every group in sidebar order with its depth, for menus.
+    func groupTree() -> [(group: PageGroup, depth: Int)] {
+        var out: [(PageGroup, Int)] = []
+        func visit(_ parent: UUID?, _ depth: Int) {
+            for child in childGroups(of: parent) {
+                out.append((child, depth))
+                visit(child.id, depth + 1)
+            }
+        }
+        visit(nil, 0)
+        return out
+    }
+
+    /// Moves a group (with its contents) into `parentID`; refuses to move it inside itself.
+    @discardableResult
+    func moveGroup(_ groupID: UUID, to parentID: UUID?) -> Bool {
+        guard let g = groups.firstIndex(where: { $0.id == groupID }) else { return false }
+        if let parentID {
+            guard group(parentID) != nil, !descendantGroupIDs(of: groupID).contains(parentID) else { return false }
+        }
+        guard groups[g].parentID != parentID else { return true }
+        var moved = groups.remove(at: g)
+        moved.parentID = parentID
+        groups.append(moved)
+        saveGroups()
+        if let parentID { expandToShow(groupID: parentID) }
+        return true
+    }
+
+    /// Expands the group and every group above it.
+    func expandToShow(groupID: UUID) {
+        for id in [groupID] + ancestors(of: groupID).map(\.id) { setExpanded(id, true) }
     }
 
     func setExpanded(_ groupID: UUID, _ expanded: Bool) {
@@ -409,15 +494,20 @@ final class Store: ObservableObject {
         saveGroups()
     }
 
-    /// Deletes the group; its pages move out to the top level.
-    /// Deletes the group and every page in it.
+    /// Deletes the group, its subgroups and every page in them.
     func deleteGroupAndPages(_ groupID: UUID) {
-        for page in pages(in: groupID) { delete(page.id) }
-        removeGroup(groupID)
+        let ids = descendantGroupIDs(of: groupID)
+        for page in allPages(in: groupID) { delete(page.id) }
+        groups.removeAll { ids.contains($0.id) }
+        saveGroups()
+        if let selection, ids.contains(selection) { self.selection = nil }
     }
 
+    /// Deletes just the group; its pages and subgroups move up to its parent.
     func removeGroup(_ groupID: UUID) {
-        for i in pages.indices where pages[i].groupID == groupID { pages[i].groupID = nil }
+        let parent = group(groupID)?.parentID
+        for i in pages.indices where pages[i].groupID == groupID { pages[i].groupID = parent }
+        for i in groups.indices where groups[i].parentID == groupID { groups[i].parentID = parent }
         groups.removeAll { $0.id == groupID }
         saveIndex()
         saveGroups()
@@ -676,9 +766,24 @@ final class Store: ObservableObject {
         (groups.first { $0.id == groupID }?.tagIDs ?? []).compactMap(tag)
     }
 
+    /// Tags from the page's group and every group above it, not repeating the page's own.
     func inheritedTags(of page: PageMeta) -> [Tag] {
-        let own = Set(page.tagIDs ?? [])
-        return groupTags(page.groupID).filter { !own.contains($0.id) }
+        var seen = Set(page.tagIDs ?? [])
+        var result: [Tag] = []
+        let chain = page.groupID.flatMap { group($0) }.map { [$0] + ancestors(of: $0.id) } ?? []
+        for group in chain {
+            for tag in groupTags(group.id) where !seen.contains(tag.id) {
+                seen.insert(tag.id)
+                result.append(tag)
+            }
+        }
+        return result
+    }
+
+    /// The nearest group (from the page's own outward) that applies `tagID`.
+    func tagSource(_ tagID: UUID, for page: PageMeta) -> String? {
+        let chain = page.groupID.flatMap { group($0) }.map { [$0] + ancestors(of: $0.id) } ?? []
+        return chain.first { $0.tagIDs?.contains(tagID) == true }?.name
     }
 
     func effectiveTags(of page: PageMeta) -> [Tag] { pageTags(page) + inheritedTags(of: page) }
@@ -765,7 +870,7 @@ final class Store: ObservableObject {
     }
 
     func reveal(_ hit: SearchHit) {
-        if let groupID = page(hit.pageID)?.groupID { setExpanded(groupID, true) }
+        if let groupID = page(hit.pageID)?.groupID { expandToShow(groupID: groupID) }
         selection = hit.pageID
         if let range = hit.range { pendingReveal = Reveal(pageID: hit.pageID, range: range) }
     }
@@ -807,6 +912,20 @@ final class Store: ObservableObject {
         if let data = try? Data(contentsOf: tagsURL),
            let saved = try? JSONDecoder().decode([Tag].self, from: data) {
             tags = saved
+        }
+        // Groups with a missing parent, or caught in a parent loop, fall back to the top level.
+        let groupIDs = Set(groups.map(\.id))
+        for i in groups.indices {
+            if let parent = groups[i].parentID, !groupIDs.contains(parent) { groups[i].parentID = nil }
+        }
+        for i in groups.indices {
+            var seen: Set<UUID> = [groups[i].id]
+            var current = groups[i].parentID
+            while let id = current {
+                if seen.contains(id) { groups[i].parentID = nil; break }
+                seen.insert(id)
+                current = groups.first { $0.id == id }?.parentID
+            }
         }
         // Pages pointing at a missing group fall back to the top level.
         let known = Set(groups.map(\.id))

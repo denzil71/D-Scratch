@@ -74,21 +74,7 @@ struct ContentView: View {
         List(selection: $store.selection) {
             ForEach(store.pages(in: nil)) { pageRow($0) }
                 .onInsert(of: [.plainText]) { index, providers in drop(providers, into: nil, at: index) }
-            ForEach(store.groups) { group in
-                DisclosureGroup(isExpanded: expandedBinding(group.id)) {
-                    ForEach(store.pages(in: group.id)) { pageRow($0) }
-                        .onInsert(of: [.plainText]) { index, providers in drop(providers, into: group.id, at: index) }
-                } label: {
-                    GroupRow(group: group, pages: store.pages(in: group.id), isUnlocked: store.isUnlocked, tags: store.groupTags(group.id))
-                        .tag(group.id)
-                        .contentShape(Rectangle())
-                        .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                            drop(providers, into: group.id, at: nil)
-                            return true
-                        }
-                        .contextMenu { groupMenu(group) }
-                }
-            }
+            ForEach(store.childGroups(of: nil)) { groupNode($0) }
         }
         .confirmationDialog(
             "Delete “\(deleteGroupTarget?.name ?? "")” and its pages?",
@@ -97,12 +83,13 @@ struct ContentView: View {
         ) { group in
             Button("Delete Group and \(pageCount(group.id))", role: .destructive) { store.deleteGroupAndPages(group.id) }
         } message: { group in
-            Text("The group and \(pageCount(group.id).lowercased()) in it will be deleted. This cannot be undone.")
+            let subgroups = store.descendantGroupIDs(of: group.id).count - 1
+            Text("The group\(subgroups > 0 ? ", its \(subgroups) subgroup\(subgroups == 1 ? "" : "s")," : "") and \(pageCount(group.id).lowercased()) in it will be deleted. This cannot be undone.")
         }
     }
 
     private func pageCount(_ groupID: UUID) -> String {
-        let count = store.pages(in: groupID).count
+        let count = store.allPages(in: groupID).count
         return count == 1 ? "1 Page" : "\(count) Pages"
     }
 
@@ -113,8 +100,8 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 Button { store.addPageNearSelection() } label: { Label("New Page", systemImage: "plus") }
                     .help(newPageHelp)
-                Button { store.addGroup() } label: { Label("New Group", systemImage: "folder.badge.plus") }
-                    .help("New group (⇧⌘N)")
+                Button { store.addGroupNearSelection() } label: { Label("New Group", systemImage: "folder.badge.plus") }
+                    .help(newGroupHelp)
                 Spacer()
             }
             .buttonStyle(.borderless)
@@ -128,6 +115,33 @@ struct ContentView: View {
         return "New page (⌘N)"
     }
 
+    private var newGroupHelp: String {
+        if let group = store.name(of: store.selectionGroupID) { return "New group inside “\(group)” (⇧⌘N)" }
+        return "New group (⇧⌘N)"
+    }
+
+    /// A group with its pages, then its subgroups (recursively).
+    private func groupNode(_ group: PageGroup) -> AnyView {
+        AnyView(
+            DisclosureGroup(isExpanded: expandedBinding(group.id)) {
+                ForEach(store.pages(in: group.id)) { pageRow($0) }
+                    .onInsert(of: [.plainText]) { index, providers in drop(providers, into: group.id, at: index) }
+                ForEach(store.childGroups(of: group.id)) { groupNode($0) }
+            } label: {
+                GroupRow(group: group, pages: store.allPages(in: group.id), isUnlocked: store.isUnlocked,
+                         tags: store.groupTags(group.id))
+                    .tag(group.id)
+                    .contentShape(Rectangle())
+                    .itemProvider { NSItemProvider(object: "group:\(group.id.uuidString)" as NSString) }
+                    .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                        drop(providers, into: group.id, at: nil)
+                        return true
+                    }
+                    .contextMenu { groupMenu(group) }
+            }
+        )
+    }
+
     private func pageRow(_ page: PageMeta) -> some View {
         PageRow(page: page, isOpen: store.isAccessible(page), tags: store.effectiveTags(of: page))
             .tag(page.id)
@@ -135,11 +149,16 @@ struct ContentView: View {
             .itemProvider { NSItemProvider(object: page.id.uuidString as NSString) }
     }
 
+    /// Drops a page (its id) or a group ("group:<id>") into `groupID` (nil = top level).
     private func drop(_ providers: [NSItemProvider], into groupID: UUID?, at index: Int?) {
         for provider in providers {
             _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let string = object as? NSString, let id = UUID(uuidString: string as String) else { return }
-                Task { @MainActor in store.movePage(id, toGroup: groupID, at: index) }
+                guard let string = (object as? NSString) as String? else { return }
+                if string.hasPrefix("group:"), let id = UUID(uuidString: String(string.dropFirst(6))) {
+                    Task { @MainActor in store.moveGroup(id, to: groupID) }
+                } else if let id = UUID(uuidString: string) {
+                    Task { @MainActor in store.movePage(id, toGroup: groupID, at: index) }
+                }
             }
         }
     }
@@ -200,7 +219,7 @@ struct ContentView: View {
 
     private func resultTitle(_ pageID: UUID) -> String {
         guard let page = store.page(pageID) else { return "" }
-        guard let group = store.name(of: page.groupID) else { return page.title }
+        guard let group = store.path(of: page.groupID) else { return page.title }
         return "\(group) › \(page.title)"
     }
 
@@ -233,14 +252,15 @@ struct ContentView: View {
             Button("No Group") { store.movePage(page.id, toGroup: nil) }
                 .disabled(page.groupID == nil)
             Divider()
-            ForEach(store.groups) { group in
-                Button(group.name) { store.movePage(page.id, toGroup: group.id) }
-                    .disabled(page.groupID == group.id)
+            ForEach(store.groupTree(), id: \.group.id) { item in
+                Button(store.path(of: item.group.id) ?? item.group.name) { store.movePage(page.id, toGroup: item.group.id) }
+                    .disabled(page.groupID == item.group.id)
             }
             Divider()
             Button("New Group") {
-                store.addGroup()
+                store.addGroup(in: page.groupID)
                 if let group = store.groups.last { store.movePage(page.id, toGroup: group.id) }
+                store.selection = page.id
             }
         }
         Divider()
@@ -258,10 +278,21 @@ struct ContentView: View {
 
     @ViewBuilder
     private func groupMenu(_ group: PageGroup) -> some View {
-        let pages = store.pages(in: group.id)
+        let pages = store.allPages(in: group.id)
+        let inside = store.descendantGroupIDs(of: group.id)
         Button("New Page in Group") { store.addPage(inGroup: group.id) }
+        Button("New Subgroup") { store.addGroup(in: group.id) }
         Button("Rename Group…") { store.renamingID = group.id }
         Button("Tags…") { groupTagsFor = group.id }
+        Menu("Move Group To") {
+            Button("Top Level") { store.moveGroup(group.id, to: nil) }
+                .disabled(group.parentID == nil)
+            Divider()
+            ForEach(store.groupTree().filter { !inside.contains($0.group.id) }, id: \.group.id) { item in
+                Button(store.path(of: item.group.id) ?? item.group.name) { store.moveGroup(group.id, to: item.group.id) }
+                    .disabled(group.parentID == item.group.id)
+            }
+        }
         Divider()
         Button("Lock All Pages in Group") { requestLock(pages.filter { !$0.isLocked }.map(\.id)) }
             .disabled(!pages.contains { !$0.isLocked })
@@ -269,7 +300,9 @@ struct ContentView: View {
             Button("Remove Locks in Group") { pages.filter(\.isLocked).forEach { store.removeLock($0.id) } }
         }
         Divider()
-        Button("Delete Group (Keep Pages)") { store.removeGroup(group.id) }
+        Button(group.parentID == nil ? "Delete Group (Keep Pages)" : "Delete Group (Keep Pages in Parent)") {
+            store.removeGroup(group.id)
+        }
         Button("Delete Group and Pages…", role: .destructive) { deleteGroupTarget = group }
             .disabled(pages.contains { !store.isAccessible($0) })
     }
@@ -472,17 +505,25 @@ struct GroupSummary: View {
     let group: PageGroup
 
     var body: some View {
-        let pages = store.pages(in: group.id)
+        let pages = store.allPages(in: group.id)
+        let subgroups = store.descendantGroupIDs(of: group.id).count - 1
         let tags = store.groupTags(group.id)
         VStack(spacing: 12) {
             Image(systemName: "folder").font(.system(size: 44)).foregroundStyle(.secondary)
             Text(group.name).font(.title2.bold())
-            Text(pages.count == 1 ? "1 page" : "\(pages.count) pages").foregroundStyle(.secondary)
+            if let parent = store.path(of: group.parentID) {
+                Text("in \(parent)").font(.callout).foregroundStyle(.secondary)
+            }
+            Text((pages.count == 1 ? "1 page" : "\(pages.count) pages")
+                 + (subgroups > 0 ? " in \(subgroups + 1) groups" : "")).foregroundStyle(.secondary)
             if !tags.isEmpty {
                 HStack(spacing: 6) { ForEach(tags) { TagChip(tag: $0) } }
             }
-            Button { store.addPage(inGroup: group.id) } label: { Label("New Page in Group", systemImage: "plus") }
-                .keyboardShortcut(.defaultAction)
+            HStack {
+                Button { store.addPage(inGroup: group.id) } label: { Label("New Page in Group", systemImage: "plus") }
+                    .keyboardShortcut(.defaultAction)
+                Button { store.addGroup(in: group.id) } label: { Label("New Subgroup", systemImage: "folder.badge.plus") }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(group.name)

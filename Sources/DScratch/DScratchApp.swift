@@ -45,7 +45,7 @@ struct DScratchApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Page") { store.addPageNearSelection() }.keyboardShortcut("n")
-                Button("New Group") { store.addGroup() }.keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("New Group") { store.addGroupNearSelection() }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandMenu("Format") {
                 Button("Bold") { send(#selector(DTextView.toggleBold(_:))) }.keyboardShortcut("b")
