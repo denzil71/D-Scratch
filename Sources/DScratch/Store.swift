@@ -60,6 +60,10 @@ extension NSColor {
 struct VaultFile: Codable {
     var salt: Data
     var wrappedKey: Data
+    /// Curve25519 key pair for encrypting backups: the public key encrypts without a password;
+    /// the private key is sealed with the data key (so only the password can open backups).
+    var backupPublicKey: Data?
+    var wrappedBackupKey: Data?
 }
 
 struct SearchHit: Identifiable {
@@ -85,6 +89,10 @@ enum Prefs {
     static let claudeBackend = "claudeBackend"
     static let claudeCodeModel = "claudeCodeModel"
     static let claudeUseCaveman = "claudeUseCaveman"
+    static let backupEnabled = "backupEnabled"
+    static let backupFrequency = "backupFrequency"
+    static let backupKeep = "backupKeep"
+    static let lastBackup = "lastBackup"
     static let defaultModel = "claude-opus-5-5"
 }
 
@@ -104,6 +112,11 @@ final class Store: ObservableObject {
     @Published var pendingReveal: Reveal?
     @Published private(set) var hasMasterPassword = false
     @Published private(set) var isUnlocked = false
+    /// Bumped when the whole data folder is replaced (restore); editors opened before it can't save.
+    @Published private(set) var dataGeneration = 0
+
+    /// Automatic and manual backups to iCloud Drive.
+    lazy var backup = BackupController(store: self)
 
     /// Text view of the page currently on screen.
     weak var activeTextView: DTextView?
@@ -131,6 +144,9 @@ final class Store: ObservableObject {
             Prefs.claudeBackend: "claudeCode",
             Prefs.claudeCodeModel: "default",
             Prefs.claudeUseCaveman: false,
+            Prefs.backupEnabled: false,
+            Prefs.backupFrequency: BackupController.Frequency.daily.rawValue,
+            Prefs.backupKeep: 10,
         ])
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.root = root ?? support.appendingPathComponent("D-Scratch", isDirectory: true)
@@ -142,6 +158,59 @@ final class Store: ObservableObject {
         selection = pages.first?.id
         observeSystemEvents()
         startAutoLock()
+        backup.start()
+    }
+
+    /// The folder holding all of D-Scratch's data.
+    var dataFolder: URL { root }
+
+    /// Newest modification time of anything in the data folder.
+    func latestChange() -> Date {
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys)?
+            .compactMap { $0 as? URL } ?? []
+        return files.compactMap { try? $0.resourceValues(forKeys: Set(keys)).contentModificationDate }.max() ?? .distantPast
+    }
+
+    /// Replaces all data with the contents of `folder` (a restored backup) and reloads.
+    /// The previous data folder is kept beside it; returns that copy's location.
+    @discardableResult
+    func replaceData(with folder: URL) throws -> URL {
+        lockAll()
+        flushAll()
+        let fm = FileManager.default
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HHmmss"
+        let base = "D-Scratch before restore \(formatter.string(from: Date()))"
+        var previous = root.deletingLastPathComponent().appendingPathComponent(base, isDirectory: true)
+        var n = 2
+        while fm.fileExists(atPath: previous.path) {
+            previous = root.deletingLastPathComponent().appendingPathComponent("\(base) \(n)", isDirectory: true)
+            n += 1
+        }
+        try fm.copyItem(at: root, to: previous)
+        let staging = root.deletingLastPathComponent().appendingPathComponent("D-Scratch-restoring-\(UUID().uuidString)")
+        try fm.copyItem(at: folder, to: staging)
+        _ = try fm.replaceItemAt(root, withItemAt: staging)
+        try? fm.createDirectory(at: pagesDir, withIntermediateDirectories: true)
+
+        dataGeneration += 1
+        flushers.removeAll()
+        textCache.removeAll()
+        vault = nil
+        dataKey = nil
+        isUnlocked = false
+        hasMasterPassword = false
+        pages = []
+        groups = []
+        tags = []
+        searchQuery = ""
+        MediaCache.clear()
+        loadIndex()
+        loadVault()
+        if pages.isEmpty { createWelcomePage() }
+        selection = pages.first?.id
+        return previous
     }
 
     // MARK: Lookup
@@ -174,7 +243,9 @@ final class Store: ObservableObject {
             data: data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil)
     }
 
-    func saveContent(_ id: UUID, _ text: NSAttributedString) {
+    /// `generation` is the `dataGeneration` the caller loaded from; stale callers are ignored.
+    func saveContent(_ id: UUID, _ text: NSAttributedString, generation: Int? = nil) {
+        if let generation, generation != dataGeneration { return }
         guard let page = page(id) else { return }
         do {
             var data = try Self.rtfd(text)
@@ -377,6 +448,7 @@ final class Store: ObservableObject {
             dataKey = key
             isUnlocked = true
             lastActivity = Date()
+            ensureBackupKeys()
         } catch {
             NSLog("D-Scratch: set password failed: \(error)")
         }
@@ -389,7 +461,10 @@ final class Store: ObservableObject {
         do {
             let wrapped = try Vault.seal(
                 key.withUnsafeBytes { Data($0) }, key: Vault.deriveKey(password: new, salt: salt))
-            try writeVault(VaultFile(salt: salt, wrappedKey: wrapped))
+            var updated = vault
+            updated.salt = salt
+            updated.wrappedKey = wrapped
+            try writeVault(updated)
             return true
         } catch {
             NSLog("D-Scratch: change password failed: \(error)")
@@ -403,7 +478,36 @@ final class Store: ObservableObject {
         dataKey = key
         isUnlocked = true
         lastActivity = Date()
+        ensureBackupKeys()
         return true
+    }
+
+    // MARK: Backup encryption
+
+    /// Creates the backup key pair the first time the vault is unlocked (needs the data key).
+    private func ensureBackupKeys() {
+        guard var file = vault, file.backupPublicKey == nil, let dataKey else { return }
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        do {
+            file.backupPublicKey = privateKey.publicKey.rawRepresentation
+            file.wrappedBackupKey = try Vault.seal(privateKey.rawRepresentation, key: dataKey)
+            try writeVault(file)
+        } catch {
+            NSLog("D-Scratch: backup key setup failed: \(error)")
+        }
+    }
+
+    enum BackupKeyState { case noPassword, needsUnlock, ready }
+
+    var backupKeyState: BackupKeyState {
+        guard let vault else { return .noPassword }
+        return vault.backupPublicKey == nil ? .needsUnlock : .ready
+    }
+
+    /// What a backup file must carry so the D-Scratch password alone can decrypt it later.
+    var backupKeyMaterial: BackupHeader.Keys? {
+        guard let vault, let publicKey = vault.backupPublicKey, let wrapped = vault.wrappedBackupKey else { return nil }
+        return BackupHeader.Keys(salt: vault.salt, wrappedDataKey: vault.wrappedKey, publicKey: publicKey, wrappedPrivateKey: wrapped)
     }
 
     func lockAll() {
