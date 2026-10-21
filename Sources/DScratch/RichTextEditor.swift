@@ -385,9 +385,13 @@ struct RichTextEditor: NSViewRepresentable {
         private var timer: Timer?
         private var lastReveal: UUID?
 
+        /// The data generation this editor loaded from; after a restore its saves are ignored.
+        let generation: Int
+
         init(pageID: UUID, store: Store) {
             self.pageID = pageID
             self.store = store
+            generation = store.dataGeneration
         }
 
         func textDidChange(_ notification: Notification) {
@@ -465,7 +469,7 @@ struct RichTextEditor: NSViewRepresentable {
         func saveNow() {
             timer?.invalidate()
             guard dirty, canSave, let storage = textView?.textStorage else { return }
-            store.saveContent(pageID, NSAttributedString(attributedString: storage))
+            store.saveContent(pageID, NSAttributedString(attributedString: storage), generation: generation)
             dirty = false
         }
     }

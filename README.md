@@ -31,6 +31,15 @@ D-Scratch registers as an *alternate* app for these types, so it never becomes t
 - While unlocked, right-click → **Remove Lock** decrypts a page permanently.
 - A locked page can't be renamed or deleted until it's unlocked.
 
+### Backup to iCloud
+Turn on **Settings › Backup › Back up to iCloud Drive automatically** to save backups to **iCloud Drive › D-Scratch Backups**, every hour, day or week (only when something has changed), keeping the newest N. **Back Up Now**, **Show in Finder** and **Restore…** are in the same tab.
+
+- Every backup is **encrypted on your Mac before it's saved** to iCloud Drive: a zip of all D-Scratch data, encrypted with X25519 + HKDF-SHA256 + AES-256-GCM to a backup key pair whose private key is protected by your D-Scratch password. Nothing readable — not even page titles — reaches iCloud.
+- Backups run while your pages are locked; **restoring needs the D-Scratch password that was set when the backup was made** (so after changing your password, older backups still use the old one). This works on a new Mac too.
+- A D-Scratch password is required (Settings › Security). If you set one before this feature existed, unlock once to finish setting up.
+- Restoring replaces all pages, groups, tags and the password with the backup's. Your current data is kept first in a *D-Scratch before restore …* folder next to the data folder.
+- Backups use your iCloud Drive folder rather than an app-specific iCloud container, which would need a paid Apple Developer ID.
+
 ### Ask Claude
 The bar at the top of each page sends a question to Claude, streams the answer into a preview, then appends it to the page under a *Claude: your question* heading (Markdown in the answer becomes rich text; code becomes a code block). **Use page** sends the page's text as context; **Stop** cancels.
 
@@ -44,6 +53,7 @@ Two ways to connect, chosen in **Settings › Claude**:
 |---|---|
 | Security | Set or change the D-Scratch password; auto-lock timeout in minutes of inactivity. |
 | Tags | Rename tags, change their colours, see how many pages and groups use each, delete tags, add new ones. |
+| Backup | Automatic encrypted backups to iCloud Drive: on/off, how often, how many to keep; Back Up Now, Show in Finder, Restore. |
 | Code | Code colour scheme: Automatic (follows light/dark), Light, Dark, Solarized Light, Dracula — with a live preview. |
 | Claude | Claude account or API key; model; Use caveman (Claude account only). |
 
@@ -98,11 +108,13 @@ For testing, set `DSCRATCH_DATA_DIR` to use a different data folder, e.g. `open 
 - `index.json` — page titles, order, group, tags and lock flag.
 - `groups.json` — group names, order, expanded state and tags.
 - `tags.json` — tag names and colours.
-- `vault.json` — a random 256-bit data key, wrapped (AES-256-GCM) by a key derived from the D-Scratch password with PBKDF2-HMAC-SHA256 (310,000 rounds, random 16-byte salt). Changing the password only re-wraps this key.
+- `vault.json` — a random 256-bit data key, wrapped (AES-256-GCM) by a key derived from the D-Scratch password with PBKDF2-HMAC-SHA256 (310,000 rounds, random 16-byte salt). Changing the password only re-wraps this key. Also holds the backup public key and the backup private key sealed with the data key.
 - `pages/<id>.page` — unlocked pages, flat RTFD. Code blocks are stored as Menlo paragraphs; their colours are recomputed when a page opens.
 - `pages/<id>.locked` — locked pages: RTFD sealed with AES-256-GCM under the data key.
 
 The Claude API key is stored in the macOS Keychain. Other settings (auto-lock minutes, code scheme, Claude connection, models, Use caveman, Use page) are in the app's user defaults.
+
+Backups: `~/Library/Mobile Documents/com~apple~CloudDocs/D-Scratch Backups/D-Scratch Backup <date>.dscratch-backup` — a small header (salt, wrapped keys, ephemeral public key) followed by the AES-GCM-encrypted zip.
 
 Pages locked by v0.1 with their own password keep working: unlock with the D-Scratch password, then enter the page's old password once to move it over.
 
@@ -112,5 +124,6 @@ Pages locked by v0.1 with their own password keep working: unlock with the D-Scr
 - Page **titles** and **tags** are not encrypted; only content is.
 - With **Use page** ticked, Ask Claude sends the page's text — including a locked page's, while unlocked — to Claude (through Claude Code or the API, whichever is selected).
 - The Claude account option runs the local `claude` CLI with no tools, no settings, plugins (other than caveman, if ticked) or MCP servers, and no saved session, from an empty temporary folder. It's intended for personal use on your own Mac.
+- Backups are encrypted before upload; a forgotten D-Scratch password means its backups can't be restored either.
 - Inline video/audio from an unlocked page is written to a temp folder for playback. The folder is cleared on lock and on quit.
 - When a page is first locked, the old plaintext file is deleted but not securely erased.

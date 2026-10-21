@@ -1,10 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     var body: some View {
         TabView {
             SecuritySettings().tabItem { Label("Security", systemImage: "lock") }
             TagSettings().tabItem { Label("Tags", systemImage: "tag") }
+            BackupSettings().tabItem { Label("Backup", systemImage: "icloud") }
             CodeSettings().tabItem { Label("Code", systemImage: "chevron.left.forwardslash.chevron.right") }
             ClaudeSettings().tabItem { Label("Claude", systemImage: "sparkles") }
         }
@@ -228,6 +230,162 @@ struct OpenSettingsButton: View {
             SettingsLink { Text("Open Settings…") }
         } else {
             Button("Open Settings…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+        }
+    }
+}
+
+struct BackupSettings: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        BackupSettingsBody(store: store, backup: store.backup)
+    }
+}
+
+/// Split out so the view observes the backup controller directly.
+private struct BackupSettingsBody: View {
+    @ObservedObject var store: Store
+    @ObservedObject var backup: BackupController
+    @AppStorage(Prefs.backupEnabled) private var enabled = false
+    @AppStorage(Prefs.backupFrequency) private var frequency = BackupController.Frequency.daily.rawValue
+    @AppStorage(Prefs.backupKeep) private var keep = 10
+    @State private var restoring: BackupFile?
+    @State private var restoredNote: String?
+
+    private var hasICloud: Bool { BackupController.folder != nil }
+    private var keysReady: Bool { store.backupKeyState == .ready }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Back up to iCloud Drive automatically", isOn: $enabled)
+                    .disabled(!hasICloud || store.backupKeyState == .noPassword)
+                Picker("How often", selection: $frequency) {
+                    ForEach(BackupController.Frequency.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .disabled(!enabled)
+                Stepper(value: $keep, in: 1...50) { Text("Keep the last \(keep) backup\(keep == 1 ? "" : "s")") }
+                    .disabled(!enabled)
+            } footer: {
+                Text(footer).font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(statusText).font(.callout)
+                        if let error = backup.lastError {
+                            Text(error).font(.caption).foregroundStyle(.red)
+                        } else if let restoredNote {
+                            Text(restoredNote).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if backup.isRunning { ProgressView().controlSize(.small) }
+                }
+                HStack {
+                    Button("Back Up Now") { Task { await backup.backUpNow() } }
+                        .disabled(!hasICloud || !keysReady || backup.isRunning)
+                    Button("Show in Finder") { backup.showInFinder() }.disabled(!hasICloud)
+                    Spacer()
+                    Button("Restore…", action: chooseBackup).disabled(backup.isRunning)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onChange(of: enabled) { if $0 { backup.backUpIfDue() } }
+        .sheet(item: $restoring) { file in
+            RestoreSheet(backup: backup, file: file.url) { previous in
+                restoredNote = "Restored. Your previous data was kept in \(previous.lastPathComponent)."
+            }
+        }
+    }
+
+    private var footer: String {
+        if !hasICloud {
+            return "iCloud Drive isn't available. Turn it on in System Settings › Apple Account › iCloud › iCloud Drive."
+        }
+        switch store.backupKeyState {
+        case .noPassword:
+            return "Backups are encrypted with your D-Scratch password, so set one in Settings › Security first."
+        case .needsUnlock:
+            return "Unlock your locked pages once to finish setting up encrypted backups."
+        case .ready:
+            return "Backups are encrypted on this Mac before they're saved to iCloud Drive › D-Scratch Backups, and are made only when something has changed. Restoring one needs the D-Scratch password that was set when it was made."
+        }
+    }
+
+    private var statusText: String {
+        if backup.isRunning { return "Backing up…" }
+        guard let last = backup.lastBackup else { return "Not backed up yet." }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last backup \(formatter.localizedString(for: last, relativeTo: Date()))."
+    }
+
+    private func chooseBackup() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: BackupHeader.fileExtension) ?? .data]
+        panel.directoryURL = BackupController.folder
+        panel.message = "Choose a D-Scratch backup to restore"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        restoring = BackupFile(url: url)
+    }
+}
+
+/// A backup file chosen for restoring.
+private struct BackupFile: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+/// Asks for the backup's password, then restores it.
+private struct RestoreSheet: View {
+    @ObservedObject var backup: BackupController
+    let file: URL
+    let onRestored: (URL) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var error: String?
+    @State private var working = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Restore “\(file.deletingPathExtension().lastPathComponent)”").font(.headline)
+            Text("All current pages, groups, tags and the D-Scratch password are replaced by the backup's. Your current data is kept in a “D-Scratch before restore” folder next to it, in case you need it back.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            SecureField("D-Scratch password used for this backup", text: $password)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(restore)
+            if let error {
+                Text(error).font(.callout).foregroundStyle(.red)
+            }
+            HStack {
+                if working { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Restore", role: .destructive, action: restore)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(password.isEmpty || working)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+
+    private func restore() {
+        guard !password.isEmpty, !working else { return }
+        working = true
+        Task {
+            do {
+                let previous = try await backup.restore(from: file, password: password)
+                onRestored(previous)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+                password = ""
+            }
+            working = false
         }
     }
 }
