@@ -42,6 +42,17 @@ final class DTextView: NSTextView {
         return CodeFormat.isCode(storage.attributes(at: location, effectiveRange: nil))
     }
 
+    /// Runs of non-space text with a letter or digit, so "state-of-the-art" is one word (as in Pages and Word).
+    private static let wordPattern = try! NSRegularExpression(pattern: "\\S*[\\p{L}\\p{N}]\\S*")
+
+    /// Words on the page, not counting code blocks.
+    var proseWordCount: Int {
+        guard let storage = textStorage else { return 0 }
+        return Self.wordPattern.matches(in: string, range: NSRange(location: 0, length: storage.length))
+            .filter { !CodeFormat.isCode(storage.attributes(at: $0.range.location, effectiveRange: nil)) }
+            .count
+    }
+
     private var currentParagraph: NSRange {
         (string as NSString).paragraphRange(for: NSRange(location: selectedRange().location, length: 0))
     }
@@ -95,6 +106,41 @@ final class DTextView: NSTextView {
         storage.addAttributes(allCode ? CodeFormat.bodyAttributes : CodeFormat.attributes(), range: paragraphs)
         storage.endEditing()
         didChangeText()
+        // A style-only change isn't rechecked, so update the misspelling marks here.
+        if allCode {
+            checkText(in: paragraphs, types: NSTextCheckingResult.CheckingType.spelling.rawValue, options: [:])
+        } else {
+            setSpellingState(0, range: paragraphs)
+        }
+    }
+
+    // MARK: Spelling
+
+    /// Code isn't prose: drop misspellings found inside code blocks.
+    override func handleTextCheckingResults(
+        _ results: [NSTextCheckingResult], forRange range: NSRange, types checkingTypes: NSTextCheckingTypes,
+        options: [NSSpellChecker.OptionKey: Any] = [:], orthography: NSOrthography, wordCount: Int
+    ) {
+        let prose = results.filter { $0.resultType != .spelling || !isCode(at: $0.range.location) }
+        super.handleTextCheckingResults(
+            prose, forRange: range, types: checkingTypes, options: options, orthography: orthography, wordCount: wordCount)
+    }
+
+    /// AppKit's menu already lists corrections for a misspelled word; its "Learn Spelling" gets a clearer name.
+    /// It checks the clicked word itself, so in code its spelling items are removed.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        let spellingActions = ["_changeSpellingFromMenu:", "_ignoreSpellingFromMenu:", "_learnSpellingFromMenu:"]
+        let clicked = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        if isCode(at: clicked) {
+            for item in menu.items where spellingActions.contains(item.action.map(NSStringFromSelector) ?? "") {
+                menu.removeItem(item)
+            }
+            while menu.items.first?.isSeparatorItem == true { menu.removeItem(at: 0) }
+        } else {
+            menu.items.first { $0.action.map(NSStringFromSelector) == "_learnSpellingFromMenu:" }?.title = "Add to Dictionary"
+        }
+        return menu
     }
 
     /// Typing outside a code block must not continue in code (e.g. on the empty line after a block).
@@ -304,6 +350,8 @@ struct RichTextEditor: NSViewRepresentable {
     let store: Store
     /// A search hit to select and scroll to.
     let reveal: Reveal?
+    /// Reports the page's word count (code blocks excluded) on load and after edits.
+    var onWordCount: (Int) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(pageID: pageID, store: store) }
 
@@ -316,6 +364,7 @@ struct RichTextEditor: NSViewRepresentable {
         textView.usesFindBar = true
         textView.usesFontPanel = true
         textView.usesRuler = true
+        textView.isContinuousSpellCheckingEnabled = true
         // Off so code-scheme colours draw exactly; default text uses the dynamic textColor instead.
         textView.usesAdaptiveColorMappingForDarkAppearance = false
         textView.drawsBackground = true
@@ -330,6 +379,7 @@ struct RichTextEditor: NSViewRepresentable {
         textView.typingAttributes = [.font: DTextView.defaultFont, .foregroundColor: NSColor.textColor]
 
         let coordinator = context.coordinator
+        coordinator.onWordCount = onWordCount
         if let content = store.loadContent(pageID) {
             textView.textStorage?.setAttributedString(content)
             if let storage = textView.textStorage {
@@ -363,10 +413,13 @@ struct RichTextEditor: NSViewRepresentable {
             textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
         }
         coordinator.apply(reveal)
+        // Deferred: SwiftUI state can't change while this view is being made.
+        DispatchQueue.main.async { coordinator.countWords() }
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
+        context.coordinator.onWordCount = onWordCount
         context.coordinator.apply(reveal)
     }
 
@@ -381,8 +434,10 @@ struct RichTextEditor: NSViewRepresentable {
         let store: Store
         weak var textView: DTextView?
         var canSave = true
+        var onWordCount: (Int) -> Void = { _ in }
         private var dirty = false
         private var timer: Timer?
+        private var countTimer: Timer?
         private var lastReveal: UUID?
 
         /// The data generation this editor loaded from; after a restore its saves are ignored.
@@ -399,6 +454,11 @@ struct RichTextEditor: NSViewRepresentable {
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.saveNow() }
+            }
+            // Recounted once typing pauses, so long pages aren't rescanned on every keystroke.
+            countTimer?.invalidate()
+            countTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.countWords() }
             }
             // Deferred so the edit that added the attachment finishes first.
             // (Code is highlighted inside the edit itself, in `willProcessEditing`.)
@@ -417,6 +477,11 @@ struct RichTextEditor: NSViewRepresentable {
                 guard !isHighlightingAll else { return }
                 CodeFormat.highlight(textStorage, around: editedRange, theme: theme)
             }
+        }
+
+        func countWords() {
+            guard let textView else { return }
+            onWordCount(textView.proseWordCount)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {

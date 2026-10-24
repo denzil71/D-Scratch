@@ -354,6 +354,23 @@ struct PageDetail: View {
     @EnvironmentObject var store: Store
     let page: PageMeta
     let requestLock: (PageMeta) -> Void
+    @State private var wordCount = 0
+
+    /// Below the editor; same padding as the sidebar's bottom bar so the two line up.
+    private var statusBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack {
+                Spacer()
+                Text(wordCount == 1 ? "1 word" : "\(wordCount.formatted()) words")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .help("Words on this page, not counting code blocks")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
 
     var body: some View {
         let accessible = store.isAccessible(page)
@@ -364,7 +381,9 @@ struct PageDetail: View {
                     Divider()
                     AskClaudeBar(pageID: page.id).id(page.id)
                     Divider()
-                    RichTextEditor(pageID: page.id, store: store, reveal: store.pendingReveal).id(page.id)
+                    RichTextEditor(pageID: page.id, store: store, reveal: store.pendingReveal) { wordCount = $0 }
+                        .id(page.id)
+                    statusBar
                 }
             } else {
                 UnlockView(page: page).id(page.id)
