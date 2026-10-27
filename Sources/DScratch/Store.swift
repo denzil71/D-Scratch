@@ -99,6 +99,10 @@ enum Prefs {
     static let captureShortcut = "captureShortcut"
     /// Where Quick Capture saves: "inbox", "top" or a group's id.
     static let captureDestination = "captureDestination"
+    static let checkForUpdates = "checkForUpdates"
+    static let lastUpdateCheck = "lastUpdateCheck"
+    /// A version the user chose to skip; automatic checks don't offer it again.
+    static let skippedUpdateVersion = "skippedUpdateVersion"
     static let defaultModel = "claude-opus-5-5"
 }
 
@@ -155,6 +159,7 @@ final class Store: ObservableObject {
             Prefs.backupKeep: 10,
             Prefs.captureShortcut: CaptureShortcut.defaultID,
             Prefs.captureDestination: Store.inboxDestination,
+            Prefs.checkForUpdates: true,
         ])
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.root = root ?? support.appendingPathComponent("D-Scratch", isDirectory: true)

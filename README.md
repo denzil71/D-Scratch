@@ -21,6 +21,9 @@ A macOS scratch pad. Pages live in a left-hand sidebar and can be organised into
 - Captures go to an **Inbox** group (created the first time) or any group you pick in the panel; the panel remembers your last choice. Capturing doesn't change the page you have open.
 - Change or turn off the shortcut in **Settings › Capture** (⌃⌥Space, ⌃⌥N, ⌃⌥⌘N or ⌃⌥⌘Space). While a shortcut is set, D-Scratch keeps running after you close its window so the shortcut still works; it needs no Accessibility permission.
 
+### Updates
+D-Scratch checks GitHub once a day for a newer release and, if there is one, shows a notice with a link to its release page (**View Release**, **Later** or **Skip This Version**). Nothing is downloaded or installed automatically. Turn it off in **Settings › Updates**, or check any time with **D-Scratch › Check for Updates…**.
+
 ### Open With
 Right-click a file in Finder → **Open With → D-Scratch**, or drop it on the Dock icon, to import it as a new page named after the file:
 - Text, Markdown, RTF/RTFD, Word, HTML and OpenDocument files become rich text (Markdown is rendered).
@@ -63,6 +66,7 @@ Two ways to connect, chosen in **Settings › Claude**:
 | Capture | Quick Capture shortcut (or off); how to use and add a shortcut for the Services menu item. |
 | Code | Code colour scheme: Automatic (follows light/dark), Light, Dark, Solarized Light, Dracula — with a live preview. |
 | Claude | Claude account or API key; model; Use caveman (Claude account only). |
+| Updates | Check for updates automatically (on by default); Check Now. |
 
 ## Keyboard shortcuts
 
@@ -120,7 +124,7 @@ For testing, set `DSCRATCH_DATA_DIR` to use a different data folder, e.g. `open 
 - `pages/<id>.page` — unlocked pages, flat RTFD. Code blocks are stored as Menlo paragraphs; their colours are recomputed when a page opens.
 - `pages/<id>.locked` — locked pages: RTFD sealed with AES-256-GCM under the data key.
 
-The Claude API key is stored in the macOS Keychain. Other settings (auto-lock minutes, code scheme, Quick Capture shortcut and destination, Claude connection, models, Use caveman, Use page) are in the app's user defaults.
+The Claude API key is stored in the macOS Keychain. Other settings (auto-lock minutes, code scheme, Quick Capture shortcut and destination, update checks, Claude connection, models, Use caveman, Use page) are in the app's user defaults.
 
 Backups: `~/Library/Mobile Documents/com~apple~CloudDocs/D-Scratch Backups/D-Scratch Backup <date>.dscratch-backup` — a small header (salt, wrapped keys, ephemeral public key) followed by the AES-GCM-encrypted zip.
 

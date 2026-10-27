@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
         GlobalHotKey.shared.onPress = { QuickCapture.shared.show() }
         GlobalHotKey.shared.apply()
+        UpdateChecker.shared.start()
     }
 
     /// Finder "Open With", drag onto the Dock icon, or `open -a D-Scratch file`.
@@ -58,6 +59,9 @@ struct DScratchApp: App {
                 .onAppear { appDelegate.store = store }
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Task { await UpdateChecker.shared.check(userInitiated: true) } }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Page") { store.addPageNearSelection() }.keyboardShortcut("n")
                 Button("New Group") { store.addGroupNearSelection() }.keyboardShortcut("n", modifiers: [.command, .shift])
