@@ -5,13 +5,25 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set once the window appears; files opened before then wait in `pending`.
     weak var store: Store? {
-        didSet { importPending() }
+        didSet {
+            importPending()
+            QuickCapture.shared.store = store
+        }
     }
     private var pending: [URL] = []
+    private let captureService = CaptureService()
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Set before launch finishes so a Services request that launched the app is delivered.
+        NSApp.servicesProvider = captureService
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        NSUpdateDynamicServices()
+        GlobalHotKey.shared.onPress = { QuickCapture.shared.show() }
+        GlobalHotKey.shared.apply()
     }
 
     /// Finder "Open With", drag onto the Dock icon, or `open -a D-Scratch file`.
@@ -27,7 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// With a Quick Capture shortcut set, D-Scratch keeps running after its window closes so the shortcut still works.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        CaptureShortcut.current == nil
+    }
 }
 
 @main
@@ -46,6 +61,7 @@ struct DScratchApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Page") { store.addPageNearSelection() }.keyboardShortcut("n")
                 Button("New Group") { store.addGroupNearSelection() }.keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Quick Capture…") { QuickCapture.shared.show() }
             }
             CommandMenu("Format") {
                 Button("Bold") { send(#selector(DTextView.toggleBold(_:))) }.keyboardShortcut("b")

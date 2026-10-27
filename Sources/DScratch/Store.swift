@@ -95,6 +95,10 @@ enum Prefs {
     static let backupFrequency = "backupFrequency"
     static let backupKeep = "backupKeep"
     static let lastBackup = "lastBackup"
+    /// A `CaptureShortcut` id, or "off".
+    static let captureShortcut = "captureShortcut"
+    /// Where Quick Capture saves: "inbox", "top" or a group's id.
+    static let captureDestination = "captureDestination"
     static let defaultModel = "claude-opus-5-5"
 }
 
@@ -149,6 +153,8 @@ final class Store: ObservableObject {
             Prefs.backupEnabled: false,
             Prefs.backupFrequency: BackupController.Frequency.daily.rawValue,
             Prefs.backupKeep: 10,
+            Prefs.captureShortcut: CaptureShortcut.defaultID,
+            Prefs.captureDestination: Store.inboxDestination,
         ])
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.root = root ?? support.appendingPathComponent("D-Scratch", isDirectory: true)
@@ -347,6 +353,57 @@ final class Store: ObservableObject {
             return NSAttributedString(string: string, attributes: CodeFormat.bodyAttributes)
         }
         return NSAttributedString(string: "Couldn't read \(url.lastPathComponent).", attributes: CodeFormat.bodyAttributes)
+    }
+
+    // MARK: Quick capture
+
+    /// Capture destination: the top-level "Inbox" group, created the first time it's used.
+    static let inboxDestination = "inbox"
+    /// Capture destination: the top level, outside any group.
+    static let topLevelDestination = "top"
+
+    /// The existing top-level "Inbox" group, if there is one.
+    var inboxGroup: PageGroup? {
+        groups.first { $0.parentID == nil && $0.name.caseInsensitiveCompare("Inbox") == .orderedSame }
+    }
+
+    /// A page from Quick Capture or the Services menu. It's saved without changing the selection,
+    /// so capturing never pulls you away from the page you're on.
+    @discardableResult
+    func addCapturedPage(title: String, content: NSAttributedString, destination: String) -> PageMeta {
+        let groupID = captureGroupID(for: destination)
+        let page = PageMeta(title: title, groupID: groupID)
+        if let last = pages.lastIndex(where: { $0.groupID == groupID }) {
+            pages.insert(page, at: last + 1)
+        } else {
+            pages.append(page)
+        }
+        saveIndex()
+        saveContent(page.id, content)
+        return page
+    }
+
+    /// A group that has since been deleted falls back to the Inbox.
+    private func captureGroupID(for destination: String) -> UUID? {
+        if destination == Self.topLevelDestination { return nil }
+        if let id = UUID(uuidString: destination), group(id) != nil { return id }
+        if let inbox = inboxGroup { return inbox.id }
+        let inbox = PageGroup(name: "Inbox")
+        groups.append(inbox)
+        saveGroups()
+        return inbox.id
+    }
+
+    /// Captured text that looks like code becomes a code block; anything else keeps its formatting.
+    static func capturedContent(_ text: NSAttributedString) -> NSAttributedString {
+        var hasAttachment = false
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, _, stop in
+            if value != nil { hasAttachment = true; stop.pointee = true }
+        }
+        guard !hasAttachment, CodeFormat.looksLikeCode(text.string) else { return text }
+        var code = text.string.replacingOccurrences(of: "\r\n", with: "\n")
+        while code.hasSuffix("\n") { code.removeLast() }
+        return NSAttributedString(string: code + "\n", attributes: CodeFormat.attributes())
     }
 
     /// New page in the selected group, or alongside the selected page.
