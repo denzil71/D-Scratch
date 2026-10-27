@@ -10,8 +10,37 @@ struct SettingsView: View {
             CaptureSettings().tabItem { Label("Capture", systemImage: "square.and.pencil") }
             CodeSettings().tabItem { Label("Code", systemImage: "chevron.left.forwardslash.chevron.right") }
             ClaudeSettings().tabItem { Label("Claude", systemImage: "sparkles") }
+            UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
-        .frame(width: 480, height: 420)
+        .frame(width: 540, height: 420)
+    }
+}
+
+struct UpdateSettings: View {
+    @AppStorage(Prefs.checkForUpdates) private var enabled = true
+    @ObservedObject private var checker = UpdateChecker.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Check for updates automatically", isOn: $enabled)
+                HStack {
+                    Text(checker.status ?? "You have D-Scratch \(UpdateChecker.currentVersion).")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    if checker.isChecking { ProgressView().controlSize(.small) }
+                    Button("Check Now") { Task { await checker.check(userInitiated: true) } }
+                        .disabled(checker.isChecking)
+                }
+            } footer: {
+                Text("Once a day, D-Scratch asks GitHub for the latest release and, if it's newer, shows a notice with a link to it. Nothing is downloaded or installed for you, and nothing about you or your pages is sent. You can also choose D-Scratch › Check for Updates… at any time.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                Link("All releases on GitHub", destination: UpdateChecker.releasesPage).font(.callout)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
