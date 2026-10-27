@@ -30,9 +30,13 @@ lipo -create "${BINS[@]}" -output "$APP/Contents/MacOS/DScratch"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
+# iCloud-synced folders (e.g. ~/Documents) tag the bundle with Finder info, which codesign rejects.
+xattr -cr "$APP"
 codesign --force --sign - "$APP"
 # Register with Launch Services so Finder lists it under "Open With".
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
+# Refresh the Services menu so "New D-Scratch Page from Selection" appears.
+/System/Library/CoreServices/pbs -update
 echo "Built $APP"
 
 if (( DMG )); then

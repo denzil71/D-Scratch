@@ -7,10 +7,47 @@ struct SettingsView: View {
             SecuritySettings().tabItem { Label("Security", systemImage: "lock") }
             TagSettings().tabItem { Label("Tags", systemImage: "tag") }
             BackupSettings().tabItem { Label("Backup", systemImage: "icloud") }
+            CaptureSettings().tabItem { Label("Capture", systemImage: "square.and.pencil") }
             CodeSettings().tabItem { Label("Code", systemImage: "chevron.left.forwardslash.chevron.right") }
             ClaudeSettings().tabItem { Label("Claude", systemImage: "sparkles") }
         }
         .frame(width: 480, height: 420)
+    }
+}
+
+struct CaptureSettings: View {
+    @AppStorage(Prefs.captureShortcut) private var shortcutID = CaptureShortcut.defaultID
+    @ObservedObject private var hotKey = GlobalHotKey.shared
+
+    var body: some View {
+        Form {
+            Section("Quick Capture") {
+                Picker("Shortcut", selection: $shortcutID) {
+                    Text("Off").tag(CaptureShortcut.offID)
+                    ForEach(CaptureShortcut.all) { Text($0.label).tag($0.id) }
+                }
+                if hotKey.failed {
+                    Text("That shortcut is already used by another app. Pick a different one.")
+                        .font(.callout).foregroundStyle(.red)
+                }
+                Text("Press the shortcut in any app to jot a note into a new page without leaving what you're doing. Return saves, Shift-Return starts a new line, Esc cancels. The panel remembers where you last saved (the Inbox group to start with). While a shortcut is set, D-Scratch keeps running after you close its window.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("From Other Apps") {
+                Text("Select text in any app, then choose **New D-Scratch Page from Selection** from the app's menu › Services, or right-click › Services. The text opens in Quick Capture so you can title it and pick a group before saving.")
+                    .font(.callout)
+                HStack {
+                    Text("Give it a shortcut in System Settings › Keyboard › Keyboard Shortcuts › Services › Text.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open…") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onChange(of: shortcutID) { _ in hotKey.apply() }
     }
 }
 

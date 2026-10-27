@@ -15,6 +15,12 @@ A macOS scratch pad. Pages live in a left-hand sidebar and can be organised into
 - **Code blocks** — pasted code is detected and placed in a boxed, syntax-highlighted block. Type ``` and press Return to start a block, or select lines and choose **Format › Code Block** (⌥⌘K) to convert them (and back). Return on an empty last line leaves a block; ↑/↓ or a click above or below a block at the very top or bottom of a page adds a text line there. Highlighting covers comments, strings, numbers, keywords, types and function calls across common languages (Swift, Python, JavaScript/TypeScript, C-style, SQL, shell). Pick the colour scheme in **Settings › Code**.
 - **Media** — drag, paste or **Page › Insert Media…** (⇧⌘I) for images, video and audio. Images scale to the page width; video and audio play inline.
 
+### Quick Capture
+- **From anywhere** — press **⌃⌥Space** in any app (or **File › Quick Capture…**) to open a small floating panel. Type a note, press Return, and it's saved as a new page without leaving the app you're in. The first line becomes the title unless you type one; Shift-Return starts a new line; Esc cancels. Text that looks like code becomes a code block.
+- **From a selection** — select text in any app, then choose **New D-Scratch Page from Selection** from that app's menu › **Services** (or right-click › **Services**). The text, with its formatting, opens in Quick Capture so you can title it and choose where it goes. Give it a keyboard shortcut in **System Settings › Keyboard › Keyboard Shortcuts › Services › Text**.
+- Captures go to an **Inbox** group (created the first time) or any group you pick in the panel; the panel remembers your last choice. Capturing doesn't change the page you have open.
+- Change or turn off the shortcut in **Settings › Capture** (⌃⌥Space, ⌃⌥N, ⌃⌥⌘N or ⌃⌥⌘Space). While a shortcut is set, D-Scratch keeps running after you close its window so the shortcut still works; it needs no Accessibility permission.
+
 ### Open With
 Right-click a file in Finder → **Open With → D-Scratch**, or drop it on the Dock icon, to import it as a new page named after the file:
 - Text, Markdown, RTF/RTFD, Word, HTML and OpenDocument files become rich text (Markdown is rendered).
@@ -54,6 +60,7 @@ Two ways to connect, chosen in **Settings › Claude**:
 | Security | Set or change the D-Scratch password; auto-lock timeout in minutes of inactivity. |
 | Tags | Rename tags, change their colours, see how many pages and groups use each, delete tags, add new ones. |
 | Backup | Automatic encrypted backups to iCloud Drive: on/off, how often, how many to keep; Back Up Now, Show in Finder, Restore. |
+| Capture | Quick Capture shortcut (or off); how to use and add a shortcut for the Services menu item. |
 | Code | Code colour scheme: Automatic (follows light/dark), Light, Dark, Solarized Light, Dracula — with a live preview. |
 | Claude | Claude account or API key; model; Use caveman (Claude account only). |
 
@@ -63,6 +70,7 @@ Two ways to connect, chosen in **Settings › Claude**:
 |---|---|
 | ⌘N | New page |
 | ⇧⌘N | New group |
+| ⌃⌥Space | Quick Capture, from any app (changeable in Settings › Capture) |
 | ⇧⌘I | Insert image, video or audio |
 | ⌘L | Lock all pages |
 | ⌥⌘K | Code block on/off for the selected lines |
@@ -112,7 +120,7 @@ For testing, set `DSCRATCH_DATA_DIR` to use a different data folder, e.g. `open 
 - `pages/<id>.page` — unlocked pages, flat RTFD. Code blocks are stored as Menlo paragraphs; their colours are recomputed when a page opens.
 - `pages/<id>.locked` — locked pages: RTFD sealed with AES-256-GCM under the data key.
 
-The Claude API key is stored in the macOS Keychain. Other settings (auto-lock minutes, code scheme, Claude connection, models, Use caveman, Use page) are in the app's user defaults.
+The Claude API key is stored in the macOS Keychain. Other settings (auto-lock minutes, code scheme, Quick Capture shortcut and destination, Claude connection, models, Use caveman, Use page) are in the app's user defaults.
 
 Backups: `~/Library/Mobile Documents/com~apple~CloudDocs/D-Scratch Backups/D-Scratch Backup <date>.dscratch-backup` — a small header (salt, wrapped keys, ephemeral public key) followed by the AES-GCM-encrypted zip.
 
